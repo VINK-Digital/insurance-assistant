@@ -5,7 +5,7 @@ const N8N_WEBHOOK_URL =
 
 export async function POST(req: Request) {
   try {
-    // Read the incoming PDF file from the frontend
+    // Read incoming file
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
 
@@ -16,17 +16,17 @@ export async function POST(req: Request) {
       );
     }
 
-    // Prepare the form-data to forward to n8n
+    // Prepare forward form-data
     const forward = new FormData();
     forward.append("file", file);
 
-    // Forward the PDF to your n8n ingestion workflow
+    // Send to n8n
     const n8nRes = await fetch(N8N_WEBHOOK_URL, {
       method: "POST",
       body: forward,
     });
 
-    // If n8n fails at HTTP level (400/500)
+    // HTTP-Level failure
     if (!n8nRes.ok) {
       const errorText = await n8nRes.text();
       return NextResponse.json(
@@ -38,5 +38,33 @@ export async function POST(req: Request) {
       );
     }
 
-    // Try to parse the JSON response from n8n
-    const data = await n8nRes.json().catch(() => null);
+    // Attempt to parse JSON safely
+    let data: any = null;
+    try {
+      data = await n8nRes.json();
+    } catch {
+      return NextResponse.json(
+        {
+          message: "n8n did not return valid JSON",
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        message: data.message || "Upload successful!",
+        policyId: data.policyId,
+      },
+      { status: 200 }
+    );
+  } catch (err: any) {
+    return NextResponse.json(
+      {
+        message: "Upload failed",
+        error: err?.message || String(err),
+      },
+      { status: 500 }
+    );
+  }
+}
