@@ -1,69 +1,36 @@
 import { NextResponse } from "next/server";
 
-const N8N_WEBHOOK_URL =
-  "https://n8n.srv1104330.hstgr.cloud/webhook/policy-upload";
+const N8N_WEBHOOK_URL = "https://n8n.srv1104330.hstgr.cloud/webhook/policy-upload";
 
 export async function POST(req: Request) {
   try {
-    // Read incoming file
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
+    const form = await req.formData();
+    const file = form.get("file") as File;
 
     if (!file) {
-      return NextResponse.json(
-        { message: "No file uploaded." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
     }
 
-    // Prepare forward form-data
-    const forward = new FormData();
-    forward.append("file", file);
+    // READ THE ACTUAL BYTES — THIS IS THE IMPORTANT PART
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
 
-    // Send to n8n
+    // FORWARD REAL BINARY TO N8N
+    const upload = new FormData();
+    upload.append("file", new Blob([bytes], { type: file.type }), file.name);
+
     const n8nRes = await fetch(N8N_WEBHOOK_URL, {
       method: "POST",
-      body: forward,
+      body: upload,
     });
 
-    // HTTP-Level failure
-    if (!n8nRes.ok) {
-      const errorText = await n8nRes.text();
-      return NextResponse.json(
-        {
-          message: "n8n workflow error",
-          error: errorText,
-        },
-        { status: 500 }
-      );
-    }
+    const data = await n8nRes.text();
 
-    // Attempt to parse JSON safely
-    let data: any = null;
-    try {
-      data = await n8nRes.json();
-    } catch {
-      return NextResponse.json(
-        {
-          message: "n8n did not return valid JSON",
-        },
-        { status: 500 }
-      );
-    }
+    return NextResponse.json({ message: "Uploaded", n8n: data });
 
-    return NextResponse.json(
-      {
-        message: data.message || "Upload successful!",
-        policyId: data.policyId,
-      },
-      { status: 200 }
-    );
   } catch (err: any) {
     return NextResponse.json(
-      {
-        message: "Upload failed",
-        error: err?.message || String(err),
-      },
+      { error: err?.message || "Upload failed" },
       { status: 500 }
     );
   }
