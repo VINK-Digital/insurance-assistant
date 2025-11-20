@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 const N8N_WEBHOOK_URL =
-  "https://n8n.srv1104330.hstgr.cloud/webhook/e5d25543-0222-43ab-bc48-58c42cc01e48";
+  "https://n8n.srv1104330.hstgr.cloud/webhook/policy-upload";
 
 export async function POST(req: Request) {
   try {
