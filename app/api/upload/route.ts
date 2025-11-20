@@ -5,80 +5,38 @@ const N8N_WEBHOOK_URL =
 
 export async function POST(req: Request) {
   try {
+    // Read the incoming PDF file from the frontend
     const formData = await req.formData();
-    const file = formData.get("file");
+    const file = formData.get("file") as File | null;
 
-    if (!file || !(file instanceof File)) {
+    if (!file) {
       return NextResponse.json(
-        {
-          ok: false,
-          step: "no-file",
-          message: "No file found in formData under key 'file'",
-        },
+        { message: "No file uploaded." },
         { status: 400 }
       );
     }
 
+    // Prepare the form-data to forward to n8n
     const forward = new FormData();
     forward.append("file", file);
 
-    let n8nResponse: Response;
-    try {
-      n8nResponse = await fetch(N8N_WEBHOOK_URL, {
-        method: "POST",
-        body: forward,
-      });
-    } catch (error) {
+    // Forward the PDF to your n8n ingestion workflow
+    const n8nRes = await fetch(N8N_WEBHOOK_URL, {
+      method: "POST",
+      body: forward,
+    });
+
+    // If n8n fails at HTTP level (400/500)
+    if (!n8nRes.ok) {
+      const errorText = await n8nRes.text();
       return NextResponse.json(
         {
-          ok: false,
-          step: "fetch-failed",
-          message: "Could not reach n8n webhook",
-          error: String(error),
-        },
-        { status: 502 }
-      );
-    }
-
-    const rawText = await n8nResponse.text();
-
-    if (!n8nResponse.ok) {
-      return NextResponse.json(
-        {
-          ok: false,
-          step: "n8n-not-ok",
-          status: n8nResponse.status,
-          body: rawText,
+          message: "n8n workflow error",
+          error: errorText,
         },
         { status: 500 }
       );
     }
 
-    let json: any = null;
-    try {
-      json = JSON.parse(rawText);
-    } catch {
-      // n8n didn't return JSON
-    }
-
-    return NextResponse.json(
-      {
-        ok: true,
-        step: "done",
-        n8nStatus: n8nResponse.status,
-        n8nRaw: rawText,
-        n8nJson: json,
-      },
-      { status: 200 }
-    );
-  } catch (err: any) {
-    return NextResponse.json(
-      {
-        ok: false,
-        step: "route-error",
-        message: err.message,
-      },
-      { status: 500 }
-    );
-  }
-}
+    // Try to parse the JSON response from n8n
+    const data = await n8nRes.json().catch(() => null);
