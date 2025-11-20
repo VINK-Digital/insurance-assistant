@@ -5,33 +5,33 @@ const N8N_WEBHOOK_URL = "https://n8n.srv1104330.hstgr.cloud/webhook/policy-uploa
 export async function POST(req: Request) {
   try {
     const form = await req.formData();
-    const file = form.get("file") as File;
+    const file = form.get("file") as File | null;
 
     if (!file) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
     }
 
-    // READ THE ACTUAL BYTES — THIS IS THE IMPORTANT PART
+    // THIS is the missing piece → extract real PDF bytes
     const arrayBuffer = await file.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
 
-    // FORWARD REAL BINARY TO N8N
+    // Forward REAL binary pdf to n8n
     const upload = new FormData();
-    upload.append("file", new Blob([bytes], { type: file.type }), file.name);
+    upload.append(
+      "file",
+      new Blob([bytes], { type: file.type }),
+      file.name
+    );
 
-    const n8nRes = await fetch(N8N_WEBHOOK_URL, {
+    const res = await fetch(N8N_WEBHOOK_URL, {
       method: "POST",
       body: upload,
     });
 
-    const data = await n8nRes.text();
+    const text = await res.text();
 
-    return NextResponse.json({ message: "Uploaded", n8n: data });
-
+    return NextResponse.json({ success: true, n8n: text });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message || "Upload failed" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
