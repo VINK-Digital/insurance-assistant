@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const N8N_WEBHOOK_URL = "https://n8n.srv1104330.hstgr.cloud/webhook/policy-upload";
+const N8N_WEBHOOK_URL = "https://n8n.srv1104330.hstgr.cloud/webhook/policy-extract";
 
 export async function POST(req: Request) {
   try {
