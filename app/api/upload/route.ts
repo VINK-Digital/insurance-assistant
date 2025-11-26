@@ -18,9 +18,9 @@ export async function POST(req: Request) {
     // Forward REAL binary pdf to n8n
     const upload = new FormData();
     upload.append(
-      "file",
-      new Blob([bytes], { type: file.type }),
-      file.name
+    "file0",
+    new Blob([bytes], { type: file.type }),
+    file.name
     );
 
     const res = await fetch(N8N_WEBHOOK_URL, {
