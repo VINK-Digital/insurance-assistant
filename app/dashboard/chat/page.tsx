@@ -12,9 +12,18 @@ export default function Page() {
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [policyId, setPolicyId] = useState<string>(""); // User needs to set this
 
   async function sendMessage() {
     if (!input.trim() || loading) return;
+
+    if (!policyId) {
+      setMessages([...messages, { 
+        role: "assistant", 
+        content: "Please enter a Policy ID first." 
+      }]);
+      return;
+    }
 
     const newMessage: Message = { role: "user", content: input };
     const updatedMessages = [...messages, newMessage];
@@ -26,7 +35,10 @@ export default function Page() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: updatedMessages }),
+        body: JSON.stringify({ 
+          messages: updatedMessages,
+          policyId: policyId 
+        }),
       });
 
       if (!res.ok) {
@@ -61,8 +73,20 @@ export default function Page() {
     <div className="max-w-2xl mx-auto p-6 h-screen flex flex-col">
       <h1 className="text-2xl font-bold mb-4">Insurance AI Demo</h1>
       
-      <div className="flex-1 overflow-y-auto border p-4 bg-white rounded shadow">
-        {messages.map((msg, i) => (
+      {/* Policy ID Input */}
+      <div className="mb-4">
+        <label className="block text-sm font-medium mb-2">
+          Policy ID (UUID from your database):
+        </label>
+        <input
+          className="w-full border p-2 rounded"
+          value={policyId}
+          placeholder="e.g., 550e8400-e29b-41d4-a716-446655440000"
+          onChange={(e) => setPolicyId(e.target.value)}
+        />
+      </div>
+      
+      <div className="flex-1 overflow-y-auto border p-4 bg-white rounded shadow">{messages.map((msg, i) => (
           <div
             key={i}
             className={`my-2 p-3 rounded-lg max-w-[80%] ${
