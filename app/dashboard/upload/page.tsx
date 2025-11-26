@@ -1,73 +1,121 @@
- "use client";
+"use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function UploadPage() {
-  const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [message, setMessage] = useState("");
+  const [customers, setCustomers] = useState([]);
+  const [selectedCustomer, setSelectedCustomer] = useState("");
+  const [newCustomerName, setNewCustomerName] = useState("");
 
-  const handleUpload = async () => {
+  const [file, setFile] = useState<File | null>(null);
+  const [status, setStatus] = useState("");
+
+  // Load existing customers on first render
+  useEffect(() => {
+    async function loadCustomers() {
+      const res = await fetch("/api/customers");
+      const data = await res.json();
+      setCustomers(data);
+    }
+    loadCustomers();
+  }, []);
+
+  async function handleUpload() {
+    setStatus("");
+
     if (!file) {
-      setMessage("Please select a PDF first.");
+      setStatus("Please select a file");
       return;
     }
 
-    setUploading(true);
-    setMessage("");
+    let customerId = selectedCustomer;
 
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      // Send to your API route → which will later send to n8n
-      const res = await fetch("/api/upload", {
+    // Create new customer if user typed name
+    if (!customerId && newCustomerName.trim()) {
+      const res = await fetch("/api/customers", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newCustomerName }),
       });
 
-      const data = await res.json();
-      setMessage(data.message || "Uploaded successfully!");
-
-    } catch (error) {
-      console.error(error);
-      setMessage("Upload failed.");
+      const created = await res.json();
+      customerId = created.id;
     }
 
-    setUploading(false);
-  };
+    if (!customerId) {
+      setStatus("Please select or create a customer");
+      return;
+    }
+
+    // Send file + customer_id to n8n webhook
+    const form = new FormData();
+    form.append("file0", file);
+    form.append("customer_id", customerId);
+
+    const webhookURL = process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL;
+
+    const upload = await fetch(webhookURL!, {
+      method: "POST",
+      body: form,
+    });
+
+    if (upload.ok) {
+      setStatus("Upload successful! Policy is now being processed.");
+      setFile(null);
+      setSelectedCustomer("");
+      setNewCustomerName("");
+    } else {
+      setStatus("Upload failed.");
+    }
+  }
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold mb-6">Upload Policy PDF</h1>
+    <div className="max-w-xl mx-auto p-6">
+      <h1 className="text-2xl font-bold mb-4">Upload Policy Schedule</h1>
 
-      <label className="border-dashed border-2 border-gray-400 p-10 rounded-lg flex flex-col items-center justify-center cursor-pointer bg-white">
-        <input
-          type="file"
-          accept="application/pdf"
-          className="hidden"
-          onChange={(e) => {
-            if (e.target.files) setFile(e.target.files[0]);
-          }}
-        />
-        <span className="text-gray-600">Drag & drop a PDF file here</span>
-        <span className="mt-2 text-sm text-gray-500">or click to select</span>
-      </label>
+      {/* Customer selection */}
+      <label className="block font-semibold mb-1">Select Customer</label>
+      <select
+        className="border p-2 rounded w-full mb-3"
+        value={selectedCustomer}
+        onChange={(e) => setSelectedCustomer(e.target.value)}
+      >
+        <option value="">-- Choose Existing Customer --</option>
+        {customers.map((c: any) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
 
-      {file && (
-        <p className="mt-4 text-gray-700">Selected file: {file.name}</p>
-      )}
+      <div className="text-center py-2 text-gray-500">OR</div>
+
+      {/* Create new customer */}
+      <input
+        className="border p-2 rounded w-full mb-3"
+        placeholder="Create New Customer"
+        value={newCustomerName}
+        onChange={(e) => setNewCustomerName(e.target.value)}
+      />
+
+      {/* File upload */}
+      <label className="block font-semibold mb-1">Select PDF</label>
+      <input
+        type="file"
+        accept="application/pdf"
+        className="border p-2 rounded w-full mb-4"
+        onChange={(e) => setFile(e.target.files?.[0] || null)}
+      />
 
       <button
         onClick={handleUpload}
-        disabled={uploading}
-        className="mt-6 px-4 py-2 bg-blue-600 text-white rounded-lg disabled:opacity-50"
+        className="bg-blue-600 text-white px-4 py-2 rounded w-full"
       >
-        {uploading ? "Uploading..." : "Upload PDF"}
+        Upload Policy
       </button>
 
-      {message && (
-        <p className="mt-4 text-gray-700 font-medium">{message}</p>
+      {status && (
+        <p className="mt-4 text-center text-sm text-gray-700">{status}</p>
       )}
     </div>
   );
