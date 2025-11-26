@@ -1,32 +1,27 @@
-import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-export const runtime = "edge"; // Important for Vercel
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+export async function askPolicyQuestion(policyId: string, question: string) {
+  const policy = await getPolicy(policyId);
 
-export async function POST(req: Request) {
-  try {
-    const { messages } = await req.json();
+  const systemPrompt = `
+You are an insurance policy analysis assistant.
+You answer questions about an insurance policy based on the structured JSON provided.
+Always ground your answers **strictly** in the JSON content.
+If the user asks something not in the JSON, say "This information is not provided in the policy schedule."
 
-    const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "You are an insurance assistant." },
-        ...messages
-      ],
-    });
+Here is the policy schedule JSON:
+${JSON.stringify(policy, null, 2)}
+  `;
 
-    return NextResponse.json({
-      answer: completion.choices[0].message.content,
-    });
-  } catch (err: any) {
-    console.error("API error:", err);
-    return NextResponse.json(
-      { answer: "Server error occurred." },
-      { status: 500 }
-    );
-  }
+  const response = await client.chat.completions.create({
+    model: "gpt-4o-mini", 
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: question }
+    ]
+  });
+
+  return response.choices[0].message.content;
 }
