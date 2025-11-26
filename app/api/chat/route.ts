@@ -1,40 +1,32 @@
 import OpenAI from "openai";
 
 export async function POST(req: Request) {
-  const { policyId, question } = await req.json();
+  try {
+    const body = await req.json();
+    const { question, policyId } = body;
 
-  const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY!,
-  });
+    if (!question) {
+      return new Response(JSON.stringify({ error: "Missing question" }), { status: 400 });
+    }
 
-  // fetch policy from Supabase here
-  // const policy = ...
+    const client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY!,
+    });
 
-  const systemPrompt = `
-You are an Insurance Policy Analysis AI.
-You answer questions based ONLY on the provided policy schedule and metadata.
+    // TEMP SAFE RESPONSE
+    const message = `You asked: ${question}. (API route is working.)`;
 
-Rules:
-- Always look inside 'tables', 'text', and 'metadata'.
-- If a value appears multiple times, prefer table data over free text.
-- Use exact numbers and wording from the JSON.
-- If the policy does NOT include a coverage, say so clearly.
-- If the user asks something outside the schedule, say:
-  "This information is not included in the policy schedule."
+    return new Response(JSON.stringify({ answer: message }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
 
-Return clear, concise answers.
-  `;
+  } catch (err: any) {
+    console.error("Chat API Error:", err);
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: question }
-    ]
-  });
-
-  return new Response(
-    JSON.stringify({ answer: completion.choices[0].message.content }),
-    { status: 200 }
-  );
+    return new Response(JSON.stringify({ error: err.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 }
