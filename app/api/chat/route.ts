@@ -11,13 +11,20 @@ export async function POST(req: Request) {
     console.log("=== Chat API Called ===");
     
     // Step 1: Parse request body
-    const { messages, policyId = 1 } = await req.json();
+    const { messages, policyId } = await req.json();
     console.log("Messages received:", messages?.length);
     console.log("Policy ID:", policyId);
     
     if (!messages || !Array.isArray(messages)) {
       return new Response(
         JSON.stringify({ error: "Missing or invalid messages" }), 
+        { status: 400 }
+      );
+    }
+
+    if (!policyId) {
+      return new Response(
+        JSON.stringify({ error: "Missing policyId" }), 
         { status: 400 }
       );
     }
@@ -60,7 +67,7 @@ export async function POST(req: Request) {
     console.log("Fetching policy...");
     const { data: policy, error } = await supabase
       .from("policies")
-      .select("tables, text, metadata")
+      .select("id, ocr_text, clean_text, file_url, file_name")
       .eq("id", policyId)
       .single();
 
@@ -98,17 +105,20 @@ export async function POST(req: Request) {
     console.log("OpenAI client created");
 
     // Step 6: Build messages array
+    const policyContent = policy.clean_text || policy.ocr_text || "No policy text available";
+    
     const systemMessage: Message = {
       role: "system",
       content: `You are an insurance coverage assistant. 
-You answer questions ONLY using the following policy schedule data:
+You answer questions ONLY using the following policy document:
 
-${JSON.stringify(policy, null, 2)}
+POLICY: ${policy.file_name || 'Insurance Policy'}
+${policyContent}
 
 If the user asks for coverage, limits, deductibles, clauses, or extensions, 
-give answers directly from the JSON.
+give answers directly from the policy text above.
 If you cannot find something, say: 
-"This information is not included in the policy schedule."`
+"This information is not included in the policy document."`
     };
 
     const fullMessages = [systemMessage, ...messages] as OpenAI.Chat.ChatCompletionMessageParam[];
