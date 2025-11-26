@@ -1,27 +1,40 @@
 import OpenAI from "openai";
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+export async function POST(req: Request) {
+  const { policyId, question } = await req.json();
 
-export async function askPolicyQuestion(policyId: string, question: string) {
-  const policy = await getPolicy(policyId);
+  const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY!,
+  });
+
+  // fetch policy from Supabase here
+  // const policy = ...
 
   const systemPrompt = `
-You are an insurance policy analysis assistant.
-You answer questions about an insurance policy based on the structured JSON provided.
-Always ground your answers **strictly** in the JSON content.
-If the user asks something not in the JSON, say "This information is not provided in the policy schedule."
+You are an Insurance Policy Analysis AI.
+You answer questions based ONLY on the provided policy schedule and metadata.
 
-Here is the policy schedule JSON:
-${JSON.stringify(policy, null, 2)}
+Rules:
+- Always look inside 'tables', 'text', and 'metadata'.
+- If a value appears multiple times, prefer table data over free text.
+- Use exact numbers and wording from the JSON.
+- If the policy does NOT include a coverage, say so clearly.
+- If the user asks something outside the schedule, say:
+  "This information is not included in the policy schedule."
+
+Return clear, concise answers.
   `;
 
-  const response = await client.chat.completions.create({
-    model: "gpt-4o-mini", 
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: question }
     ]
   });
 
-  return response.choices[0].message.content;
+  return new Response(
+    JSON.stringify({ answer: completion.choices[0].message.content }),
+    { status: 200 }
+  );
 }
