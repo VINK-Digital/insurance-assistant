@@ -2,31 +2,23 @@ import OpenAI from "openai";
 
 export async function POST(req: Request) {
   try {
-    let bodyText = await req.text();
-    console.log("RAW BODY:", bodyText);
+    const { messages } = await req.json();
 
-    // Try parse JSON
-    let body;
-    try {
-      body = JSON.parse(bodyText);
-    } catch (e) {
-      return new Response(JSON.stringify({
-        error: "Invalid JSON body",
-        raw: bodyText
-      }), { status: 400 });
+    if (!messages || !Array.isArray(messages)) {
+      return new Response(JSON.stringify({ error: "Missing 'messages' array" }), { status: 400 });
     }
 
-    const { question, policyId } = body;
+    const client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY!,
+    });
 
-    if (!question) {
-      return new Response(JSON.stringify({
-        error: "Missing 'question' field",
-        received: body
-      }), { status: 400 });
-    }
+    const completion = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: messages,
+    });
 
     return new Response(JSON.stringify({
-      answer: `OK: I received your question: ${question}`
+      answer: completion.choices[0].message.content
     }), { status: 200 });
 
   } catch (err: any) {
