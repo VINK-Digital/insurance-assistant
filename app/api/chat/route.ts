@@ -1,4 +1,4 @@
-mport OpenAI from "openai";
+import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
 type Message = {
