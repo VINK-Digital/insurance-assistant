@@ -56,8 +56,6 @@ export async function POST(req: Request) {
     );
     console.log("Supabase client created");
 
-    console.log("Supabase client created");
-
     // Step 4: Fetch policy from database
     console.log("Fetching policy...");
     const { data: policy, error } = await supabase
@@ -96,12 +94,7 @@ export async function POST(req: Request) {
     console.log("Policy loaded successfully");
 
     // Step 5: Initialize OpenAI client
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-    console.log("Policy loaded successfully");
-
-    // Step 5: Initialize OpenAI client
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     console.log("OpenAI client created");
 
     // Step 6: Build messages array
@@ -122,7 +115,7 @@ If you cannot find something, say:
     console.log("Calling OpenAI with", fullMessages.length, "messages");
 
     // Step 7: Call OpenAI API
-    const completion = await client.chat.completions.create({
+    const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: fullMessages,
     });
