@@ -16,6 +16,9 @@ export default function DashboardLayout({
           <a href="/dashboard/upload" className="block hover:text-blue-300">
             Upload PDF
           </a>
+          <a href="/dashboard/upload-wording" className="block hover:text-blue-300">
+            Upload Insurance Policy
+          </a>
           <a href="/dashboard/policies" className="block hover:text-blue-300">
             Policies
           </a>
