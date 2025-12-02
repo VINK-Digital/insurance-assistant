@@ -1,126 +1,130 @@
 "use client";
-import { useState } from "react";
 
-type Message = {
-  role: "user" | "assistant";
-  content: string;
-};
+import { useState, useEffect } from "react";
 
-export default function Page() {
-  const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", content: "Hi! I'm your Insurance AI assistant. How can I help?" }
-  ]);
+export default function ChatPage() {
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [policyId, setPolicyId] = useState<string>(""); // User needs to set this
+  const [policies, setPolicies] = useState([]);
+  const [customerId, setCustomerId] = useState(null);
+  const [lastPolicyId, setLastPolicyId] = useState(null);
+  const [clarification, setClarification] = useState(null);
 
+  // Load customer & policies on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const custId = params.get("customerId");
+    setCustomerId(custId);
+
+    if (!custId) return;
+
+    fetch(`/api/customers?customerId=${custId}`)
+      .then((r) => r.json())
+      .then((data) => {
+        setPolicies(data.policies || []);
+      });
+  }, []);
+
+  // Send message to backend
   async function sendMessage() {
-    if (!input.trim() || loading) return;
+    if (!input) return;
 
-    if (!policyId) {
-      setMessages([...messages, { 
-        role: "assistant", 
-        content: "Please enter a Policy ID first." 
-      }]);
+    const userMsg = { role: "user", content: input };
+    setMessages((prev) => [...prev, userMsg]);
+
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: input,
+        customerId,
+        policies,
+        lastPolicyId,
+      }),
+    });
+
+    const data = await res.json();
+
+    // If API needs user clarification
+    if (data.clarification) {
+      setClarification(data.question);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: data.question },
+      ]);
       return;
     }
 
-    const newMessage: Message = { role: "user", content: input };
-    const updatedMessages = [...messages, newMessage];
-    setMessages(updatedMessages);
-    setInput("");
-    setLoading(true);
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          messages: updatedMessages,
-          policyId: policyId 
-        }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`API error: ${res.status}`);
-      }
-
-      const data = await res.json();
-      
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
-      setMessages([
-        ...updatedMessages, 
-        { role: "assistant", content: data.answer || "No response received." }
-      ]);
-    } catch (error: any) {
-      console.error("Chat error:", error);
-      setMessages([
-        ...updatedMessages, 
-        { 
-          role: "assistant", 
-          content: `Error: ${error.message || "Failed to get response. Please try again."}` 
-        }
-      ]);
-    } finally {
-      setLoading(false);
+    // Save selected policy for memory
+    if (data.selectedPolicyId) {
+      setLastPolicyId(data.selectedPolicyId);
     }
+
+    // Add assistant message
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: data.answer },
+    ]);
+
+    setInput("");
+  }
+
+  // When clarification is pending, treat next user reply as the answer
+  async function handleClarification() {
+    const answer = input;
+    setInput("");
+    setClarification(null);
+
+    // Send clarification + original context
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: answer,
+        customerId,
+        policies,
+        lastPolicyId,
+        clarification: true,
+      }),
+    });
+
+    const data = await res.json();
+
+    setLastPolicyId(data.selectedPolicyId);
+
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: data.answer },
+    ]);
   }
 
   return (
-    <div className="max-w-2xl mx-auto p-6 h-screen flex flex-col">
-      <h1 className="text-2xl font-bold mb-4">Insurance AI Demo</h1>
-      
-      {/* Policy ID Input */}
-      <div className="mb-4">
-        <label className="block text-sm font-medium mb-2">
-          Policy ID (UUID from your database):
-        </label>
-        <input
-          className="w-full border p-2 rounded"
-          value={policyId}
-          placeholder="e.g., 550e8400-e29b-41d4-a716-446655440000"
-          onChange={(e) => setPolicyId(e.target.value)}
-        />
-      </div>
-      
-      <div className="flex-1 overflow-y-auto border p-4 bg-white rounded shadow">{messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`my-2 p-3 rounded-lg max-w-[80%] ${
-              msg.role === "assistant"
-                ? "bg-gray-100 text-gray-900"
-                : "bg-blue-600 text-white ml-auto"
-            }`}
-            style={msg.role === "user" ? { marginLeft: "auto" } : {}}
-          >
-            {msg.content}
+    <div className="p-6">
+      <h1 className="text-xl font-bold">Policy Assistant Chat</h1>
+
+      {/* Messages */}
+      <div className="mt-4 space-y-3">
+        {messages.map((m, i) => (
+          <div key={i} className={m.role === "user" ? "text-blue-600" : "text-green-700"}>
+            <b>{m.role}:</b> {m.content}
           </div>
         ))}
-        {loading && (
-          <div className="my-2 p-3 rounded-lg max-w-[80%] bg-gray-100 text-gray-900">
-            Thinking...
-          </div>
-        )}
       </div>
 
-      <div className="mt-4 flex">
+      {/* Input */}
+      <div className="mt-4 flex gap-2">
         <input
-          className="flex-1 border p-2 rounded-l"
+          className="flex-1 border p-2"
+          placeholder="Ask about a policy…"
           value={input}
-          placeholder="Ask about a policy..."
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !loading && sendMessage()}
-          disabled={loading}
         />
-        <button 
-          className="px-4 bg-blue-600 text-white rounded-r disabled:opacity-50" 
-          onClick={sendMessage}
-          disabled={loading}
+
+        <button
+          onClick={clarification ? handleClarification : sendMessage}
+          className="px-4 py-2 bg-blue-600 text-white rounded"
         >
-          {loading ? "..." : "Send"}
+          {clarification ? "Clarify" : "Send"}
         </button>
       </div>
     </div>
