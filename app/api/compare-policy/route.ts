@@ -22,42 +22,42 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. Load policy with wording_id
-    const { data: policy, error: policyError } = await supabase
+    // 1. Load policy
+    const { data: policy } = await supabase
       .from("policies")
       .select("id, insurer, wording_id, ocr_text")
       .eq("id", policyId)
       .single();
 
-    if (!policy || policyError) {
+    if (!policy) {
       return NextResponse.json(
-        { error: "Policy not found", details: policyError },
+        { error: "Policy not found" },
         { status: 404 }
       );
     }
 
     if (!policy.wording_id) {
       return NextResponse.json(
-        { error: "Policy has no wording_id — run match first" },
+        { error: "Policy not matched to a wording" },
         { status: 400 }
       );
     }
 
     // 2. Load wording text
-    const { data: wording, error: wordingError } = await supabase
+    const { data: wording } = await supabase
       .from("policy_wording")
       .select("id, wording_text")
       .eq("id", policy.wording_id)
       .single();
 
-    if (!wording || wordingError) {
+    if (!wording) {
       return NextResponse.json(
-        { error: "Wording not found", details: wordingError },
+        { error: "Wording not found" },
         { status: 404 }
       );
     }
 
-    // 3. Run comparison via GPT
+    // 3. Run comparison
     const prompt = `
 Compare the following Australian insurance policy schedule to the official policy wording.
 
@@ -78,26 +78,27 @@ Return STRICT JSON ONLY in this structure:
   "recommendations": [...]
 }
 
-Policy Schedule Text:
+Policy Schedule:
 ---
 ${policy.ocr_text}
 ---
 
-Official Policy Wording Text:
+Wording:
 ---
 ${wording.wording_text}
 ---
-    `;
+`;
 
     const completion = await openai.responses.create({
       model: "gpt-4.1",
       input: prompt,
-      response_format: { type: "json_object" }
+      response_mime_type: "application/json"
     });
 
-    const analysis = JSON.parse(completion.output_text);
+    const json = completion.output[0].content[0].text;
+    const analysis = JSON.parse(json);
 
-    // 4. Save analysis to DB
+    // 4. Save analysis
     const { data: saved, error: saveError } = await supabase
       .from("policy_analysis")
       .insert({
@@ -116,7 +117,7 @@ ${wording.wording_text}
       );
     }
 
-    // 5. Update policy status
+    // 5. Update status
     await supabase
       .from("policies")
       .update({ status: "compared" })
@@ -129,7 +130,7 @@ ${wording.wording_text}
 
   } catch (err: any) {
     return NextResponse.json(
-      { error: "Unexpected error", details: String(err) },
+      { error: "Unexpected error", details: err.message },
       { status: 500 }
     );
   }
