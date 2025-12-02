@@ -6,6 +6,18 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+// Normalize insurer names so "Pty Ltd" and "Pty Limited" match
+function normalizeInsurer(name: string | null) {
+  if (!name) return "";
+  return name
+    .toLowerCase()
+    .replace(/pty[\.\s]*limited/g, "pty ltd")   // convert "pty limited" → "pty ltd"
+    .replace(/limited/g, "ltd")                // convert "limited" → "ltd"
+    .replace(/\./g, "")                        // remove dots
+    .replace(/\s+/g, " ")                      // fix spacing
+    .trim();
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { policyId } = await req.json();
@@ -17,7 +29,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1) Load policy details
+    // 1) Load policy
     const { data: policy, error: policyError } = await supabase
       .from("policies")
       .select("id, insurer, wording_version")
@@ -31,33 +43,53 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2) Flexible matching for insurer (covers Pty Ltd vs Pty Limited)
-    const { data: wording, error: wordingError } = await supabase
-      .from("policy_wording")
-      .select("id, insurer, wording_version")
-      .ilike("insurer", `%${policy.insurer}%`)
-      .eq("wording_version", policy.wording_version)
-      .single();
+    const extractedInsurer = normalizeInsurer(policy.insurer);
+    const extractedVersion = policy.wording_version.trim();
 
-    if (!wording || wordingError) {
+    // 2) Load all wordings to match manually
+    const { data: wordings, error: wordingError } = await supabase
+      .from("policy_wording")
+      .select("id, insurer, wording_version");
+
+    if (wordingError || !wordings) {
+      return NextResponse.json(
+        { error: "Failed to load wordings", details: wordingError },
+        { status: 500 }
+      );
+    }
+
+    // 3) Find best match
+    const match = wordings.find((w) => {
+      const normalizedW = normalizeInsurer(w.insurer);
+      return (
+        normalizedW === extractedInsurer &&
+        w.wording_version === extractedVersion
+      );
+    });
+
+    if (!match) {
       return NextResponse.json(
         {
           error: "No matching wording found",
-          details: wordingError,
-          debug: {
-            insurer_searched: policy.insurer,
-            version_searched: policy.wording_version,
-          }
+          searched: {
+            extractedInsurer,
+            extractedVersion
+          },
+          availableWordings: wordings.map((w) => ({
+            id: w.id,
+            insurer: normalizeInsurer(w.insurer),
+            wording_version: w.wording_version
+          }))
         },
         { status: 404 }
       );
     }
 
-    // 3) Update policy with wording_id
+    // 4) Update policy
     const { data: updated, error: updateError } = await supabase
       .from("policies")
       .update({
-        wording_id: wording.id,
+        wording_id: match.id,
         status: "matched",
       })
       .eq("id", policy.id)
