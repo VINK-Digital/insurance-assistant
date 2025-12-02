@@ -96,7 +96,16 @@ ${lastPolicyId ?? "none"}
       ]
     });
 
-    const selection = JSON.parse(choosePolicy.choices[0].message.content);
+   const content = choosePolicy.choices[0].message.content;
+
+if (!content) {
+  return NextResponse.json(
+    { error: "AI returned empty content during policy selection" },
+    { status: 500 }
+  );
+}
+
+const selection = JSON.parse(content);
 
     // If GPT needs clarifying, return question to frontend
     if (selection.needs_clarification) {
