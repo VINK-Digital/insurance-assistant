@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
 
     // 2) Ask OpenAI to extract insurer + wording_version
     const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-5.1-mini",
       response_format: { type: "json_object" },
       messages: [
         {
