@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
 
     // 2) find matching wording
     const { data: wording, error: wordingError } = await supabase
-      .from("policy_wordings")
+      .from("policy_wording")
       .select("id")
       .eq("insurer", policy.insurer)
       .eq("wording_version", policy.wording_version)
