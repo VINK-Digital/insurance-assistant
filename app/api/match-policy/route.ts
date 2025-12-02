@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1) load the policy
+    // 1) Load policy details
     const { data: policy, error: policyError } = await supabase
       .from("policies")
       .select("id, insurer, wording_version")
@@ -31,22 +31,29 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2) find matching wording
+    // 2) Flexible matching for insurer (covers Pty Ltd vs Pty Limited)
     const { data: wording, error: wordingError } = await supabase
       .from("policy_wording")
-      .select("id")
-      .eq("insurer", policy.insurer)
+      .select("id, insurer, wording_version")
+      .ilike("insurer", `%${policy.insurer}%`)
       .eq("wording_version", policy.wording_version)
       .single();
 
     if (!wording || wordingError) {
       return NextResponse.json(
-        { error: "No matching wording found", details: wordingError },
+        {
+          error: "No matching wording found",
+          details: wordingError,
+          debug: {
+            insurer_searched: policy.insurer,
+            version_searched: policy.wording_version,
+          }
+        },
         { status: 404 }
       );
     }
 
-    // 3) update policy
+    // 3) Update policy with wording_id
     const { data: updated, error: updateError } = await supabase
       .from("policies")
       .update({
@@ -68,6 +75,7 @@ export async function POST(req: NextRequest) {
       { success: true, policy: updated },
       { status: 200 }
     );
+
   } catch (err: any) {
     return NextResponse.json(
       { error: "Unexpected error", details: String(err) },
