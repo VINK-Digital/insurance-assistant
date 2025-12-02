@@ -76,7 +76,7 @@ Return STRICT JSON:
     const policyListString = JSON.stringify(policies, null, 2);
 
     const choosePolicy = await openai.chat.completions.create({
-      model: "gpt-5.1-mini",
+      model: "gpt-5-mini",
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: systemMessage },
