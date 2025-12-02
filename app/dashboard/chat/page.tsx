@@ -14,43 +14,48 @@ export default function ChatPage() {
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll
+  // Auto scroll to bottom when messages change
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Load all customers
+  // Load all customers for dropdown
   useEffect(() => {
-    fetch("/api/customers") // you already have this API
+    fetch("/api/customers")
       .then((r) => r.json())
-      .then((data) => {
-        setCustomers(data.customers || []);
-      });
+      .then((data) => setCustomers(data.customers || []));
   }, []);
 
-  // Load policies when customer changes
+  // Load policies when customer is selected
   useEffect(() => {
     if (!customerId) return;
+
     fetch(`/api/customers?customerId=${customerId}`)
       .then((r) => r.json())
       .then((data) => {
         setPolicies(data.policies || []);
-        setMessages([]); // reset chat
-        setLastPolicyId(null);
+        setMessages([]); // Reset chat for new customer
+        setLastPolicyId(null); // Unlock memory
       });
   }, [customerId]);
 
+  // -------------------------------
+  // SEND MESSAGE
+  // -------------------------------
   async function sendMessage() {
     if (!input.trim() || !customerId) return;
 
-    const userMsg = { role: "user", content: input };
-    setMessages((prev) => [...prev, userMsg]);
+    const text = input.trim();
+    setInput(""); // Clear input immediately
+
+    // Add user message
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
 
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        message: input,
+        message: text,
         customerId,
         policies,
         lastPolicyId,
@@ -65,7 +70,6 @@ export default function ChatPage() {
         ...prev,
         { role: "assistant", content: data.question },
       ]);
-      setInput("");
       return;
     }
 
@@ -77,16 +81,22 @@ export default function ChatPage() {
       ...prev,
       { role: "assistant", content: data.answer },
     ]);
-
-    setInput("");
   }
 
+  // -------------------------------
+  // HANDLE CLARIFICATION ANSWER
+  // -------------------------------
   async function handleClarification() {
-    const answer = input.trim();
-    if (!answer) return;
+    if (!input.trim()) return;
 
+    const answer = input.trim();
     setInput("");
     setClarification(null);
+
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: answer }
+    ]);
 
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -112,11 +122,14 @@ export default function ChatPage() {
     ]);
   }
 
+  // --------------------------------
+  // UI
+  // --------------------------------
   return (
     <div className="w-full min-h-screen bg-gray-100 flex justify-center p-6">
       <div className="w-full max-w-3xl bg-white shadow-lg rounded-xl flex flex-col border border-gray-200">
         
-        {/* Header */}
+        {/* HEADER */}
         <div className="p-4 border-b border-gray-200 bg-white rounded-t-xl">
           <h1 className="text-2xl font-semibold text-gray-800">
             Policy Assistant
@@ -125,7 +138,7 @@ export default function ChatPage() {
             Ask anything about your customer’s policies.
           </p>
 
-          {/* Customer Selector */}
+          {/* CUSTOMER DROPDOWN */}
           <div className="mt-4">
             <label className="text-sm font-medium text-gray-700">Select customer</label>
             <select
@@ -143,21 +156,19 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Chat disabled until customer selected */}
+        {/* CHAT DISABLED UNTIL CUSTOMER SELECTED */}
         {!customerId ? (
           <div className="p-6 text-center text-gray-500">
-            Select a customer to begin chatting.
+            Select a customer to start chatting.
           </div>
         ) : (
           <>
-            {/* Chat Messages */}
+            {/* CHAT MESSAGES */}
             <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50">
               {messages.map((msg, i) => (
                 <div
                   key={i}
-                  className={`flex ${
-                    msg.role === "user" ? "justify-end" : "justify-start"
-                  }`}
+                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                 >
                   <div
                     className={`max-w-[75%] px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed ${
@@ -174,18 +185,17 @@ export default function ChatPage() {
               <div ref={scrollRef} />
             </div>
 
-            {/* Input */}
+            {/* INPUT BOX */}
             <div className="p-4 border-t border-gray-200 bg-white rounded-b-xl">
               <div className="flex gap-3">
                 <input
                   className="flex-1 border border-gray-300 bg-gray-50 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-green-600"
-                  placeholder={
-                    clarification ? "Please clarify…" : "Ask about a policy…"
-                  }
+                  placeholder={clarification ? "Please clarify…" : "Ask about a policy…"}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
                       clarification ? handleClarification() : sendMessage();
                     }
                   }}
@@ -201,7 +211,7 @@ export default function ChatPage() {
             </div>
           </>
         )}
-
+        
       </div>
     </div>
   );
