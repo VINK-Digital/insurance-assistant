@@ -1,154 +1,176 @@
+import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
-type Message = {
-  role: "user" | "assistant" | "system";
-  content: string;
-};
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
 
-export async function POST(req: Request) {
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+// Helper to load full policy context
+async function loadPolicyContext(policyId: string) {
+  const { data: policy } = await supabase
+    .from("policies")
+    .select("*")
+    .eq("id", policyId)
+    .single();
+
+  if (!policy) return null;
+
+  const { data: wording } = await supabase
+    .from("policy_wording")
+    .select("*")
+    .eq("id", policy.wording_id)
+    .single();
+
+  const { data: analysis } = await supabase
+    .from("policy_analysis")
+    .select("*")
+    .eq("policy_id", policyId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .single();
+
+  return { policy, wording, analysis };
+}
+
+export async function POST(req: NextRequest) {
   try {
-    console.log("=== Chat API Called ===");
-    
-    // Step 1: Parse request body
-    const { messages, policyId } = await req.json();
-    console.log("Messages received:", messages?.length);
-    console.log("Policy ID:", policyId);
-    
-    if (!messages || !Array.isArray(messages)) {
-      return new Response(
-        JSON.stringify({ error: "Missing or invalid messages" }), 
+    const body = await req.json();
+    const { message, customerId, policies, lastPolicyId } = body;
+
+    if (!message || !customerId || !policies) {
+      return NextResponse.json(
+        { error: "Missing required fields" },
         { status: 400 }
       );
     }
 
-    if (!policyId) {
-      return new Response(
-        JSON.stringify({ error: "Missing policyId" }), 
-        { status: 400 }
-      );
-    }
+    // We ask GPT to choose the correct policy first.
+    const systemMessage = `
+You are an expert insurance assistant.
 
-    // Step 2: Check environment variables
-    if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
-      console.error("Missing NEXT_PUBLIC_SUPABASE_URL");
-      return new Response(
-        JSON.stringify({ error: "Supabase URL not configured" }), 
-        { status: 500 }
-      );
-    }
-    
-    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      console.error("Missing SUPABASE_SERVICE_ROLE_KEY");
-      return new Response(
-        JSON.stringify({ error: "Supabase key not configured" }), 
-        { status: 500 }
-      );
-    }
+You have multiple policies available for this customer. 
+Your job is to:
+1. Identify which policy the user's message is referring to.
+2. If the user's message could refer to multiple policies, ask for clarification.
+3. If the message clearly relates to the policy previously discussed, keep using it.
+4. Once a policy is identified, DO NOT hallucinate. Only answer using:
+   - The policy schedule OCR text
+   - The corresponding policy wording
+   - The structured comparison analysis
 
-    if (!process.env.OPENAI_API_KEY) {
-      console.error("Missing OPENAI_API_KEY");
-      return new Response(
-        JSON.stringify({ error: "OpenAI API key not configured" }), 
-        { status: 500 }
-      );
-    }
+Return STRICT JSON:
+{
+  "selected_policy_id": "uuid or null",
+  "needs_clarification": true/false,
+  "clarification_question": "string or null",
+  "final_answer": "string or null"
+}
+`;
 
-    console.log("Environment variables OK");
+    const policyListString = JSON.stringify(policies, null, 2);
 
-    // Step 3: Connect to Supabase
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    );
-    console.log("Supabase client created");
+    const choosePolicy = await openai.chat.completions.create({
+      model: "gpt-5.1-mini",
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemMessage },
+        {
+          role: "user",
+          content: `
+User message:
+"${message}"
 
-    // Step 4: Fetch policy from database
-    console.log("Fetching policy...");
-    const { data: policy, error } = await supabase
-      .from("policies")
-      .select("id, ocr_text, clean_text, file_url, file_name")
-      .eq("id", policyId)
-      .single();
+Customer policies:
+${policyListString}
 
-    console.log("Policy fetch result:", { 
-      found: !!policy, 
-      error: error?.message 
+Previously selected policy:
+${lastPolicyId ?? "none"}
+`
+        }
+      ]
     });
 
-    if (error) {
-      console.error("Supabase Error:", error);
-      return new Response(
-        JSON.stringify({ 
-          error: `Database error: ${error.message}`,
-          details: "Make sure the 'policies' table exists and has data"
-        }),
+    const selection = JSON.parse(choosePolicy.choices[0].message.content);
+
+    // If GPT needs clarifying, return question to frontend
+    if (selection.needs_clarification) {
+      return NextResponse.json({
+        clarification: true,
+        question: selection.clarification_question,
+      });
+    }
+
+    const selectedPolicyId =
+      selection.selected_policy_id || lastPolicyId || null;
+
+    if (!selectedPolicyId) {
+      return NextResponse.json({
+        clarification: true,
+        question: "Which policy would you like help with?",
+      });
+    }
+
+    // Load policy details (OCR + wording + analysis)
+    const context = await loadPolicyContext(selectedPolicyId);
+
+    if (!context) {
+      return NextResponse.json(
+        { error: "Policy context not found" },
         { status: 500 }
       );
     }
-    
-    if (!policy) {
-      console.error("Policy not found for ID:", policyId);
-      return new Response(
-        JSON.stringify({ 
-          error: `Policy with ID ${policyId} not found`,
-          details: "Check if the policy exists in your database"
-        }),
-        { status: 404 }
-      );
-    }
 
-    console.log("Policy loaded successfully");
+    const { policy, wording, analysis } = context;
 
-    // Step 5: Initialize OpenAI client
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    console.log("OpenAI client created");
+    // Build second-level GPT answer
+    const answerPrompt = `
+User question: "${message}"
 
-    // Step 6: Build messages array
-    const policyContent = policy.clean_text || policy.ocr_text || "No policy text available";
-    
-    const systemMessage: Message = {
-      role: "system",
-      content: `You are an insurance coverage assistant. 
-You answer questions ONLY using the following policy document:
+Policy schedule (OCR):
+---
+${policy.ocr_text}
+---
 
-POLICY: ${policy.file_name || 'Insurance Policy'}
-${policyContent}
+Policy wording:
+---
+${wording?.wording_text ?? "No wording text found"}
+---
 
-If the user asks for coverage, limits, deductibles, clauses, or extensions, 
-give answers directly from the policy text above.
-If you cannot find something, say: 
-"This information is not included in the policy document."`
-    };
+Policy comparison analysis:
+---
+${analysis?.comparison ? JSON.stringify(analysis.comparison) : "No analysis data available"}
+---
 
-    const fullMessages = [systemMessage, ...messages] as OpenAI.Chat.ChatCompletionMessageParam[];
-    console.log("Calling OpenAI with", fullMessages.length, "messages");
+Answer the user using only the information above.
+If something is not found in the policy, say so honestly.
+`;
 
-    // Step 7: Call OpenAI API
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: fullMessages,
+    const final = await openai.chat.completions.create({
+      model: "gpt-5.1",
+      messages: [
+        { role: "system", content: "You are an insurance expert. Keep responses accurate and concise." },
+        { role: "user", content: answerPrompt }
+      ]
     });
 
-    console.log("OpenAI response received");
+    const finalAnswer = final.choices[0].message.content;
 
-    const answer = completion.choices[0]?.message?.content || "No response generated.";
-
-    return new Response(JSON.stringify({ answer }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
+    return NextResponse.json({
+      success: true,
+      answer: finalAnswer,
+      selectedPolicyId,
     });
+
   } catch (err: any) {
-    console.error("=== Chat API Error ===");
-    console.error("Error name:", err.name);
-    console.error("Error message:", err.message);
-    console.error("Error stack:", err.stack);
-    
-    return new Response(
-      JSON.stringify({ 
-        error: err.message || "Internal server error",
-        type: err.name || "Unknown error"
-      }), 
+    console.error(err);
+    return NextResponse.json(
+      { error: "Server error", details: err.message },
       { status: 500 }
     );
   }
