@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
 
     // 3. Run comparison via Chat Completions (same style as extract route)
     const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-5.1-mini",
       response_format: { type: "json_object" },
       messages: [
         {
