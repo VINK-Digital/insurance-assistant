@@ -3,12 +3,12 @@
 import { useState, useEffect } from "react";
 
 export default function ChatPage() {
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState("");
-  const [policies, setPolicies] = useState([]);
-  const [customerId, setCustomerId] = useState(null);
-  const [lastPolicyId, setLastPolicyId] = useState(null);
-  const [clarification, setClarification] = useState(null);
+  const [policies, setPolicies] = useState<any[]>([]);
+  const [customerId, setCustomerId] = useState<string | null>(null);
+  const [lastPolicyId, setLastPolicyId] = useState<string | null>(null);
+  const [clarification, setClarification] = useState<string | null>(null);
 
   // Load customer & policies on mount
   useEffect(() => {
