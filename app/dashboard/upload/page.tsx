@@ -5,7 +5,6 @@ import { useState, useEffect } from "react";
 type Customer = {
   id: string;
   name: string;
-  created_at?: string;
 };
 
 export default function UploadPage() {
@@ -13,37 +12,66 @@ export default function UploadPage() {
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
 
+  // Status: idle | uploading | ocr | parsing | matching | done | error
+  const [status, setStatus] = useState<string>("idle");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Modal
   const [showNewCustomer, setShowNewCustomer] = useState(false);
   const [newCustomerName, setNewCustomerName] = useState("");
 
-  // Load customers on mount
+  // Load customers
   useEffect(() => {
     fetch("/api/customers")
       .then((r) => r.json())
       .then((data) => setCustomers(data.customers || []));
   }, []);
 
-  // Auto-select customer from ?customerId=
+  // Auto-select ?customerId
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const cId = params.get("customerId");
-    if (cId) setCustomerId(cId);
+    const cid = params.get("customerId");
+    if (cid) setCustomerId(cid);
   }, []);
 
   async function uploadPolicy() {
     if (!file || !customerId) return;
 
+    setStatus("uploading");
+    setErrorMsg(null);
+
     const formData = new FormData();
     formData.append("file", file);
     formData.append("customerId", customerId);
 
-    const res = await fetch("/api/upload", {
-      method: "POST",
-      body: formData,
-    });
+    try {
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
 
-    const data = await res.json();
-    console.log("Upload result:", data);
+      if (!res.ok) {
+        setStatus("error");
+        const err = await res.json();
+        setErrorMsg(err.error || "Upload failed");
+        return;
+      }
+
+      setStatus("parsing");
+
+      const data = await res.json();
+      console.log("UPLOAD RESULT:", data);
+
+      // If extraction JSON exists, update the UI flow
+      if (data.extracted) {
+        setStatus("matching");
+      }
+
+      setTimeout(() => setStatus("done"), 600);
+    } catch (err: any) {
+      setStatus("error");
+      setErrorMsg(String(err.message || err));
+    }
   }
 
   async function createCustomer() {
@@ -60,11 +88,42 @@ export default function UploadPage() {
     if (data.customer?.id) {
       setCustomerId(data.customer.id);
       setCustomers((prev) => [...prev, data.customer]);
-
       setShowNewCustomer(false);
       setNewCustomerName("");
     }
   }
+
+  // Status component
+  const renderStatus = () => {
+    const common = "mt-4 p-3 rounded text-white font-medium";
+
+    switch (status) {
+      case "uploading":
+        return <div className={`${common} bg-blue-600`}>Uploading file…</div>;
+
+      case "ocr":
+        return <div className={`${common} bg-indigo-600`}>Scanning document (OCR)…</div>;
+
+      case "parsing":
+        return <div className={`${common} bg-purple-600`}>Extracting structured data…</div>;
+
+      case "matching":
+        return <div className={`${common} bg-teal-600`}>Matching policy wording…</div>;
+
+      case "done":
+        return <div className={`${common} bg-green-600`}>Upload complete ✓</div>;
+
+      case "error":
+        return (
+          <div className={`${common} bg-red-600`}>
+            Error: {errorMsg || "Something went wrong"}
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  };
 
   return (
     <div className="p-6 max-w-2xl mx-auto">
@@ -80,9 +139,9 @@ export default function UploadPage() {
           onChange={(e) => setCustomerId(e.target.value)}
         >
           <option value="">Choose customer...</option>
-          {customers.map((c: any) => (
+          {customers.map((c) => (
             <option key={c.id} value={c.id}>
-              {c.name || c.id}
+              {c.name}
             </option>
           ))}
         </select>
@@ -95,13 +154,14 @@ export default function UploadPage() {
         </button>
       </div>
 
-      {/* FILE UPLOAD */}
+      {/* FILE INPUT */}
       <input
         type="file"
         className="border p-2 rounded w-full"
         onChange={(e) => setFile(e.target.files?.[0] || null)}
       />
 
+      {/* UPLOAD BUTTON */}
       <button
         onClick={uploadPolicy}
         className="mt-4 w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700"
@@ -109,7 +169,10 @@ export default function UploadPage() {
         Upload Policy
       </button>
 
-      {/* ADD CUSTOMER MODAL */}
+      {/* STATUS */}
+      {renderStatus()}
+
+      {/* MODAL */}
       {showNewCustomer && (
         <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center">
           <div className="bg-white p-6 shadow-xl rounded-lg w-full max-w-sm">
