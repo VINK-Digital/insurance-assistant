@@ -129,35 +129,39 @@ If the question is ambiguous:
     // -------------------------------
     // 5. Now answer question using STRICT GROUNDED DATA
     // -------------------------------
-    const answerPrompt = `
-You are an insurance assistant. 
-ANSWER USING ONLY THE DATA PROVIDED.
-DO NOT GUESS.
-DO NOT USE OUTSIDE KNOWLEDGE.
+  const answerPrompt = `
+You are an insurance assistant for brokers.
 
-Here is the POLICY SCHEDULE JSON:
+DATA YOU MAY USE:
+- POLICY SCHEDULE JSON (includes tables, limits, deductibles, etc.)
+- POLICY WORDING TEXT (full wording 11.20 etc.)
+- COMPARISON JSON (pre-computed differences between schedule and wording)
+
+You MUST follow these rules:
+- Answer ONLY using these data sources.
+- If something is not in the data, say clearly: "This is not in the schedule/wording I have."
+- Do NOT guess or hallucinate.
+- Prefer the wording text for definitions and clause meaning.
+- Prefer the schedule JSON for actual insured limits, deductibles, and sub-limits.
+
+STYLE:
+- Be concise and practical.
+- Maximum 2–3 short paragraphs or a short bullet list.
+- For questions like "What does clause 2.2(b) Crime mean?", give a plain-English summary in 3–5 sentences based on the wording text.
+- Always mention limits & deductibles when they are relevant to the question.
+
+POLICY SCHEDULE JSON:
 ${JSON.stringify(scheduleJSON, null, 2)}
 
-Here is the POLICY WORDING TEXT (if available):
+POLICY WORDING TEXT (may include clauses like 2.2(b) Crime):
 ${wordingText.slice(0, 20000)}
 
-Here is the COMPARISON RESULT JSON (if available):
+COMPARISON RESULT JSON (if available):
 ${JSON.stringify(comparisonJSON, null, 2)}
 
 User question:
 "${message}"
-
-TASKS:
-1. Answer the user's question using ONLY information from the JSON or wording text.
-2. If the question refers to a section, table, limit, extension, exclusion, deductible, etc — locate it in the JSON.
-3. If something is not present in the data, clearly state: "This information is not present in your policy schedule or wording."
-4. Keep the answer precise, accurate, non-speculative.
 `;
-
-    const final = await openai.responses.create({
-      model: "gpt-5-mini",
-      input: answerPrompt,
-    });
 
     const answer = final.output_text ?? "I'm sorry, I could not produce an answer.";
 
