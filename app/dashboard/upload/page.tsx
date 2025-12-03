@@ -180,6 +180,9 @@ async function createCustomer() {
   }
 }
 
+const params = new URLSearchParams(window.location.search);
+const newCustomer = params.get("customerId");
+if (newCustomer) setCustomerId(newCustomer);
 
   );
 }
