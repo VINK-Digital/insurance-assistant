@@ -1,188 +1,140 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
 
 export default function UploadPage() {
   const [customers, setCustomers] = useState([]);
-  const [selectedCustomer, setSelectedCustomer] = useState("");
+  const [customerId, setCustomerId] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+
+  const [showNewCustomer, setShowNewCustomer] = useState(false);
   const [newCustomerName, setNewCustomerName] = useState("");
 
-  const [file, setFile] = useState<File | null>(null);
-  const [status, setStatus] = useState("");
-
-  // Load existing customers on first render
+  // Load customers on mount
   useEffect(() => {
-    async function loadCustomers() {
-      const res = await fetch("/api/customers");
-      const data = await res.json();
-      setCustomers(data);
-    }
-    loadCustomers();
+    fetch("/api/customers")
+      .then((r) => r.json())
+      .then((data) => setCustomers(data.customers || []));
   }, []);
 
-  async function handleUpload() {
-    setStatus("");
+  // Auto-select customer from ?customerId=
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const cId = params.get("customerId");
+    if (cId) setCustomerId(cId);
+  }, []);
 
-    if (!file) {
-      setStatus("Please select a file");
-      return;
-    }
+  async function uploadPolicy() {
+    if (!file || !customerId) return;
 
-    let customerId = selectedCustomer;
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("customerId", customerId);
 
-    // Create new customer if user typed name
-    if (!customerId && newCustomerName.trim()) {
-      const res = await fetch("/api/customers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newCustomerName }),
-      });
-
-      const created = await res.json();
-      customerId = created.id;
-    }
-
-    if (!customerId) {
-      setStatus("Please select or create a customer");
-      return;
-    }
-
-    // Send file + customer_id to n8n webhook
-    const form = new FormData();
-    form.append("file0", file);
-    form.append("customer_id", customerId);
-
-    const webhookURL = process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL;
-
-    const upload = await fetch(webhookURL!, {
+    const res = await fetch("/api/upload", {
       method: "POST",
-      body: form,
+      body: formData,
     });
 
-    if (upload.ok) {
-      setStatus("Upload successful! Policy is now being processed.");
-      setFile(null);
-      setSelectedCustomer("");
+    const data = await res.json();
+    console.log("Upload result:", data);
+  }
+
+  async function createCustomer() {
+    if (!newCustomerName.trim()) return;
+
+    const res = await fetch("/api/customers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newCustomerName }),
+    });
+
+    const data = await res.json();
+
+    if (data.customer?.id) {
+      setCustomerId(data.customer.id);
+      setCustomers((prev) => [...prev, data.customer]);
+
+      setShowNewCustomer(false);
       setNewCustomerName("");
-    } else {
-      setStatus("Upload failed.");
     }
   }
 
   return (
-    <div className="max-w-xl mx-auto p-6">
-      <h1 className="text-2xl font-bold mb-4">Upload Policy Schedule</h1>
+    <div className="p-6 max-w-2xl mx-auto">
 
-      {/* Customer selection */}
-      <label className="block font-semibold mb-1">Select Customer</label>
-      <select
-        className="border p-2 rounded w-full mb-3"
-        value={selectedCustomer}
-        onChange={(e) => setSelectedCustomer(e.target.value)}
-      >
-        <option value="">-- Choose Existing Customer --</option>
-        {customers.map((c: any) => (
-          <option key={c.id} value={c.id}>
-            {c.name}
-          </option>
-        ))}
-      </select>
+      <h1 className="text-2xl font-bold mb-4">Upload Policy</h1>
 
-      <div className="text-center py-2 text-gray-500">OR</div>
+      {/* CUSTOMER SELECT */}
+      <label className="text-sm font-medium">Select Customer</label>
+      <div className="flex gap-2 mb-4 mt-2">
+        <select
+          className="flex-1 border p-2 rounded"
+          value={customerId || ""}
+          onChange={(e) => setCustomerId(e.target.value)}
+        >
+          <option value="">Choose customer...</option>
+          {customers.map((c: any) => (
+            <option key={c.id} value={c.id}>
+              {c.name || c.id}
+            </option>
+          ))}
+        </select>
 
-      {/* Create new customer */}
-      <input
-        className="border p-2 rounded w-full mb-3"
-        placeholder="Create New Customer"
-        value={newCustomerName}
-        onChange={(e) => setNewCustomerName(e.target.value)}
-      />
+        <button
+          onClick={() => setShowNewCustomer(true)}
+          className="px-4 py-2 bg-green-700 text-white rounded-lg shadow hover:bg-green-800"
+        >
+          + Add Customer
+        </button>
+      </div>
 
-      {/* File upload */}
-      <label className="block font-semibold mb-1">Select PDF</label>
+      {/* FILE UPLOAD */}
       <input
         type="file"
-        accept="application/pdf"
-        className="border p-2 rounded w-full mb-4"
+        className="border p-2 rounded w-full"
         onChange={(e) => setFile(e.target.files?.[0] || null)}
       />
 
       <button
-        onClick={handleUpload}
-        className="bg-blue-600 text-white px-4 py-2 rounded w-full"
+        onClick={uploadPolicy}
+        className="mt-4 w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700"
       >
         Upload Policy
       </button>
 
-      {status && (
-        <p className="mt-4 text-center text-sm text-gray-700">{status}</p>
+      {/* ADD CUSTOMER MODAL */}
+      {showNewCustomer && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center">
+          <div className="bg-white p-6 shadow-xl rounded-lg w-full max-w-sm">
+            <h2 className="text-xl font-semibold mb-4">Add New Customer</h2>
+
+            <input
+              className="w-full border p-2 rounded mb-4"
+              placeholder="Customer name"
+              value={newCustomerName}
+              onChange={(e) => setNewCustomerName(e.target.value)}
+            />
+
+            <div className="flex justify-end gap-2">
+              <button
+                className="px-4 py-2 bg-gray-300 rounded"
+                onClick={() => setShowNewCustomer(false)}
+              >
+                Cancel
+              </button>
+
+              <button
+                className="px-4 py-2 bg-green-700 text-white rounded"
+                onClick={createCustomer}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
       )}
+
     </div>
-    <button
-  onClick={() => setShowNewCustomer(true)}
-  className="px-4 py-2 bg-green-700 text-white rounded-lg shadow hover:bg-green-800"
->
-  + Add Customer
-</button>
-const [showNewCustomer, setShowNewCustomer] = useState(false);
-const [newCustomerName, setNewCustomerName] = useState("");
-{showNewCustomer && (
-  <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center">
-    <div className="bg-white p-6 shadow-xl rounded-lg w-full max-w-sm">
-      <h2 className="text-xl font-semibold mb-4">Add New Customer</h2>
-
-      <input
-        className="w-full border p-2 rounded mb-4"
-        placeholder="Customer name"
-        value={newCustomerName}
-        onChange={(e) => setNewCustomerName(e.target.value)}
-      />
-
-      <div className="flex justify-end gap-2">
-        <button
-          className="px-4 py-2 bg-gray-300 rounded"
-          onClick={() => setShowNewCustomer(false)}
-        >
-          Cancel
-        </button>
-
-        <button
-          className="px-4 py-2 bg-green-700 text-white rounded"
-          onClick={createCustomer}
-        >
-          Save
-        </button>
-      </div>
-    </div>
-  </div>
-)}
-async function createCustomer() {
-  if (!newCustomerName.trim()) return;
-
-  const res = await fetch("/api/customers", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: newCustomerName }),
-  });
-
-  const data = await res.json();
-
-  if (data.customer?.id) {
-    // select new customer
-    setCustomerId(data.customer.id);
-
-    // close modal
-    setShowNewCustomer(false);
-    setNewCustomerName("");
-
-    // reload customers
-    setCustomers((prev) => [...prev, data.customer]);
-  }
-}
-
-const params = new URLSearchParams(window.location.search);
-const newCustomer = params.get("customerId");
-if (newCustomer) setCustomerId(newCustomer);
-
   );
 }
