@@ -6,85 +6,77 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+// ------------------------
+// GET /api/customers
+// ------------------------
 export async function GET(req: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url);
-    const customerId = searchParams.get("customerId");
+    const customerId = req.nextUrl.searchParams.get("customerId");
 
-    // -------------------------------
-    // MODE 1: Return ALL customers
-    // -------------------------------
-    if (!customerId) {
-      const { data, error } = await supabase
+    if (customerId) {
+      // Return a single customer & their policies
+      const { data: customer, error: customerError } = await supabase
         .from("customers")
         .select("*")
-        .order("created_at", { ascending: false });
+        .eq("id", customerId)
+        .single();
 
-      if (error) {
-        return NextResponse.json(
-          { error: "Failed to load customers", details: error },
-          { status: 500 }
-        );
-      }
+      const { data: policies } = await supabase
+        .from("policies")
+        .select("*")
+        .eq("customer_id", customerId);
 
       return NextResponse.json({
-        customers: data,
+        customer,
+        policies,
+        error: customerError || null
       });
     }
 
-    // -------------------------------
-    // MODE 2: Return CUSTOMER + POLICIES
-    // -------------------------------
-    const { data: customer, error: customerErr } = await supabase
+    // Return all customers
+    const { data: customers, error } = await supabase
       .from("customers")
       .select("*")
-      .eq("id", customerId)
-      .single();
-
-    if (!customer || customerErr) {
-      return NextResponse.json(
-        { error: "Customer not found", details: customerErr },
-        { status: 404 }
-      );
-    }
-
-    const { data: policies, error: policyErr } = await supabase
-      .from("policies")
-      .select("*")
-      .eq("customer_id", customerId)
       .order("created_at", { ascending: false });
 
-    if (policyErr) {
-      return NextResponse.json(
-        { error: "Failed to load policies", details: policyErr },
-        { status: 500 }
-      );
-    }
-
-    return NextResponse.json({
-      customer,
-      policies,
-    });
+    return NextResponse.json({ customers, error });
   } catch (err: any) {
     return NextResponse.json(
       { error: "Unexpected server error", details: err.message },
       { status: 500 }
-      export async function POST(req: NextRequest) {
-  const { name } = await req.json();
-
-  const { data, error } = await supabase
-    .from("customers")
-    .insert({ name })
-    .select()
-    .single();
-
-  if (error) {
-    return NextResponse.json({ error }, { status: 400 });
+    );
   }
-
-  return NextResponse.json({ customer: data });
 }
 
+// ------------------------
+// POST /api/customers
+// ------------------------
+export async function POST(req: NextRequest) {
+  try {
+    const { name } = await req.json();
+
+    if (!name || name.trim() === "") {
+      return NextResponse.json(
+        { error: "Name is required" },
+        { status: 400 }
+      );
+    }
+
+    const { data, error } = await supabase
+      .from("customers")
+      .insert({ name })
+      .select()
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error }, { status: 400 });
+    }
+
+    return NextResponse.json({ customer: data });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: "Unexpected server error", details: err.message },
+      { status: 500 }
     );
   }
 }
