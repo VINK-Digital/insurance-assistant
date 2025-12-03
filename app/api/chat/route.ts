@@ -127,9 +127,9 @@ If the question is ambiguous:
     }
 
     // -------------------------------
-    // 5. Now answer question using STRICT GROUNDED DATA
-    // -------------------------------
-  const answerPrompt = `
+// -------------------------------
+// 5. Now answer question using STRICT GROUNDED DATA
+const answerPrompt = `
 You are an insurance assistant for brokers.
 
 DATA YOU MAY USE:
@@ -137,18 +137,18 @@ DATA YOU MAY USE:
 - POLICY WORDING TEXT (full wording 11.20 etc.)
 - COMPARISON JSON (pre-computed differences between schedule and wording)
 
-You MUST follow these rules:
+RULES:
 - Answer ONLY using these data sources.
-- If something is not in the data, say clearly: "This is not in the schedule/wording I have."
+- If something is not in the data, explicitly say: "This is not in the schedule/wording I have."
 - Do NOT guess or hallucinate.
 - Prefer the wording text for definitions and clause meaning.
 - Prefer the schedule JSON for actual insured limits, deductibles, and sub-limits.
 
 STYLE:
 - Be concise and practical.
-- Maximum 2–3 short paragraphs or a short bullet list.
-- For questions like "What does clause 2.2(b) Crime mean?", give a plain-English summary in 3–5 sentences based on the wording text.
-- Always mention limits & deductibles when they are relevant to the question.
+- 2–3 short paragraphs max OR a short bullet list.
+- When explaining a clause, write in plain English (3–5 sentences).
+- Always mention limits & deductibles if relevant.
 
 POLICY SCHEDULE JSON:
 ${JSON.stringify(scheduleJSON, null, 2)}
@@ -163,17 +163,17 @@ User question:
 "${message}"
 `;
 
-    const answer = final.output_text ?? "I'm sorry, I could not produce an answer.";
+// Call GPT to generate grounded answer
+const final = await openai.responses.create({
+  model: "gpt-5-mini",
+  input: answerPrompt,
+});
 
-    return NextResponse.json({
-      success: true,
-      answer,
-      selectedPolicyId,
-    });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: "Chat error", details: err.message },
-      { status: 500 }
-    );
-  }
-}
+const answer =
+  final.output_text ?? "I'm sorry, I could not produce an answer.";
+
+return NextResponse.json({
+  success: true,
+  answer,
+  selectedPolicyId,
+});
