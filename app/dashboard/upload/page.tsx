@@ -2,8 +2,14 @@
 
 import { useState, useEffect } from "react";
 
+type Customer = {
+  id: string;
+  name: string;
+  created_at?: string;
+};
+
 export default function UploadPage() {
-  const [customers, setCustomers] = useState([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
 
