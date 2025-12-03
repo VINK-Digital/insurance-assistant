@@ -2,19 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
+
 const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
-
 export async function POST(req: NextRequest) {
   try {
     const { policyId } = await req.json();
-
     if (!policyId) {
       return NextResponse.json(
         { error: "Missing policyId" },
@@ -22,169 +21,108 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. Load policy (must already be matched to a wording)
-    const { data: policy, error: policyError } = await supabase
+    // 1) Load policy + wording
+    const { data: policy } = await supabase
       .from("policies")
-      .select("id, insurer, wording_id, ocr_text")
+      .select("ocr_text, wording_id")
       .eq("id", policyId)
       .single();
 
-    if (!policy || policyError) {
+    if (!policy?.ocr_text) {
       return NextResponse.json(
-        { error: "Policy not found", details: policyError },
-        { status: 404 }
-      );
-    }
-
-    if (!policy.wording_id) {
-      return NextResponse.json(
-        { error: "Policy has no wording_id — run match first" },
+        { error: "Policy has no extracted text" },
         { status: 400 }
       );
     }
 
-    if (!policy.ocr_text) {
+    if (!policy?.wording_id) {
       return NextResponse.json(
-        { error: "Policy has no ocr_text to compare" },
+        { error: "Policy has no matched wording" },
         { status: 400 }
       );
     }
 
-    // 2. Load wording text
-    const { data: wording, error: wordingError } = await supabase
+    const { data: wording } = await supabase
       .from("policy_wording")
-      .select("id, wording_text")
+      .select("wording_text")
       .eq("id", policy.wording_id)
       .single();
 
-    if (!wording || wordingError) {
+    if (!wording?.wording_text) {
       return NextResponse.json(
-        { error: "Wording not found", details: wordingError },
-        { status: 404 }
-      );
-    }
-
-    if (!wording.wording_text) {
-      return NextResponse.json(
-        { error: "Wording has no wording_text to compare" },
+        { error: "Wording text missing" },
         { status: 400 }
       );
     }
 
-    // 3. Run comparison via Chat Completions (same style as extract route)
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5.1-mini",
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an assistant that compares Australian insurance policy schedules to their official policy wordings. Return STRICT JSON only.",
-        },
-        {
-          role: "user",
-          content: `
-Compare the following Australian insurance policy schedule to the official policy wording.
+    const scheduleJSON = policy.ocr_text;
+    const wordingText = wording.wording_text;
 
-Return STRICT JSON ONLY in this structure:
+    // 2) Comparison prompt
+    const prompt = `
+Compare this INSURANCE POLICY SCHEDULE (structured JSON) with this POLICY WORDING (raw text)
+and return a STRICT JSON summary:
 
 {
-  "overall_summary": "string",
-  "differences": [
+  "sections": [
     {
-      "clause": "string",
-      "policy_position": "string",
-      "wording_position": "string",
-      "difference_summary": "string",
-      "severity": "low" | "medium" | "high"
+      "name": "Section name",
+      "schedule_limit": "...",
+      "wording_limit": "...",
+      "match": true/false,
+      "notes": "short explanation"
     }
   ],
-  "missing_clauses": [
+  "missing_sections": ["..."],
+  "endorsement_differences": [
     {
-      "clause": "string",
-      "description": "string",
-      "impact": "string"
+      "endorsement": "...",
+      "in_schedule": true/false,
+      "in_wording": true/false
     }
   ],
-  "notable_exclusions": [
-    {
-      "exclusion": "string",
-      "where_found": "string",
-      "impact": "string"
-    }
-  ],
-  "recommendations": [
-    {
-      "item": "string",
-      "priority": "low" | "medium" | "high"
-    }
-  ]
+  "overall_risk_summary": "1–2 sentence conclusion with no nonsense."
 }
 
-Policy Schedule Text:
----
-${policy.ocr_text}
----
+RULES:
+- Be precise.
+- Use the schedule JSON's tables to read limits.
+- If the wording does not specify a limit for a section, set wording_limit=null.
+- Do NOT assume limits.
+`;
 
-Official Policy Wording Text:
----
-${wording.wording_text}
----
-        `,
-        },
-      ],
+    const completion = await openai.responses.create({
+      model: "gpt-5",
+      input: [
+        { role: "user", content: [
+            { type: "input_text", text: prompt },
+            { type: "input_text", text: `SCHEDULE_JSON:\n${scheduleJSON}` },
+            { type: "input_text", text: `WORDING_TEXT:\n${wordingText}` },
+        ]}
+      ]
     });
 
-    const content = completion.choices[0]?.message?.content;
-    if (!content) {
-      return NextResponse.json(
-        { error: "No content returned from OpenAI" },
-        { status: 500 }
-      );
-    }
+    let output = completion.output_text ?? "{}";
 
-    let analysis: any;
-    try {
-      analysis = JSON.parse(content);
-    } catch (e) {
-      return NextResponse.json(
-        { error: "Failed to parse AI JSON", raw: content },
-        { status: 500 }
-      );
-    }
+    // Clean up markdown if needed
+    output = output
+      .replace(/```json/gi, "")
+      .replace(/```/g, "")
+      .trim();
 
-    // 4. Save analysis into policy_analysis table
-    const { data: saved, error: saveError } = await supabase
-      .from("policy_analysis")
-      .insert({
-        policy_id: policy.id,
-        wording_id: wording.id,
-        comparison: analysis,
-        summary: analysis.overall_summary ?? null,
-      })
-      .select()
-      .single();
+    const analysis = JSON.parse(output);
 
-    if (saveError) {
-      return NextResponse.json(
-        { error: "Failed to save analysis", details: saveError },
-        { status: 500 }
-      );
-    }
+    // 3) Save comparison result
+    await supabase.from("analysis").insert({
+      policy_id: policyId,
+      result_json: analysis,
+    });
 
-    // 5. Update policy status
-    await supabase
-      .from("policies")
-      .update({ status: "compared" })
-      .eq("id", policy.id);
+    return NextResponse.json({ success: true, analysis });
 
-    return NextResponse.json(
-      { success: true, analysis: saved },
-      { status: 200 }
-    );
   } catch (err: any) {
     return NextResponse.json(
-      { error: "Unexpected error", details: String(err?.message ?? err) },
+      { error: "Compare error", details: err.message },
       { status: 500 }
     );
   }
