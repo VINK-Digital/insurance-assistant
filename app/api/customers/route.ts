@@ -69,6 +69,22 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       { error: "Unexpected server error", details: err.message },
       { status: 500 }
+      export async function POST(req: NextRequest) {
+  const { name } = await req.json();
+
+  const { data, error } = await supabase
+    .from("customers")
+    .insert({ name })
+    .select()
+    .single();
+
+  if (error) {
+    return NextResponse.json({ error }, { status: 400 });
+  }
+
+  return NextResponse.json({ customer: data });
+}
+
     );
   }
 }
