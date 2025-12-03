@@ -118,5 +118,68 @@ export default function UploadPage() {
         <p className="mt-4 text-center text-sm text-gray-700">{status}</p>
       )}
     </div>
+    <button
+  onClick={() => setShowNewCustomer(true)}
+  className="px-4 py-2 bg-green-700 text-white rounded-lg shadow hover:bg-green-800"
+>
+  + Add Customer
+</button>
+const [showNewCustomer, setShowNewCustomer] = useState(false);
+const [newCustomerName, setNewCustomerName] = useState("");
+{showNewCustomer && (
+  <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center">
+    <div className="bg-white p-6 shadow-xl rounded-lg w-full max-w-sm">
+      <h2 className="text-xl font-semibold mb-4">Add New Customer</h2>
+
+      <input
+        className="w-full border p-2 rounded mb-4"
+        placeholder="Customer name"
+        value={newCustomerName}
+        onChange={(e) => setNewCustomerName(e.target.value)}
+      />
+
+      <div className="flex justify-end gap-2">
+        <button
+          className="px-4 py-2 bg-gray-300 rounded"
+          onClick={() => setShowNewCustomer(false)}
+        >
+          Cancel
+        </button>
+
+        <button
+          className="px-4 py-2 bg-green-700 text-white rounded"
+          onClick={createCustomer}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+async function createCustomer() {
+  if (!newCustomerName.trim()) return;
+
+  const res = await fetch("/api/customers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: newCustomerName }),
+  });
+
+  const data = await res.json();
+
+  if (data.customer?.id) {
+    // select new customer
+    setCustomerId(data.customer.id);
+
+    // close modal
+    setShowNewCustomer(false);
+    setNewCustomerName("");
+
+    // reload customers
+    setCustomers((prev) => [...prev, data.customer]);
+  }
+}
+
+
   );
 }
