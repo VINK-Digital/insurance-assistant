@@ -18,67 +18,64 @@ export async function POST(req: NextRequest) {
     const file = formData.get("file") as File | null;
     const customerId = formData.get("customerId") as string | null;
 
-    if (!file) {
-      return NextResponse.json(
-        { error: "Missing file in form-data" },
-        { status: 400 }
-      );
-    }
+    if (!file)
+      return NextResponse.json({ error: "Missing file" }, { status: 400 });
 
-    if (!customerId) {
+    if (!customerId)
       return NextResponse.json(
-        { error: "Missing customerId in form-data" },
+        { error: "Missing customerId" },
         { status: 400 }
       );
-    }
 
     // 1) Upload file to Supabase Storage
-    const fileBytes = await file.arrayBuffer();
-    const fileBuffer = Buffer.from(fileBytes);
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const fileExt = file.name.split(".").pop() || "pdf";
+    const storagePath = `policies/${randomUUID()}.${fileExt}`;
 
-    const fileExt = file.name.split(".").pop();
-    const filePath = `policies/${randomUUID()}.${fileExt || "pdf"}`;
-
-    const { data: storageData, error: storageError } = await supabase.storage
-      .from("policies") // bucket name
-      .upload(filePath, fileBuffer, {
+    const { error: uploadError } = await supabase.storage
+      .from("policies")
+      .upload(storagePath, buffer, {
         contentType: file.type || "application/pdf",
       });
 
-    if (storageError) {
+    if (uploadError) {
       return NextResponse.json(
-        { error: "Failed to upload to storage", details: storageError },
+        { error: "Failed to upload file", details: uploadError },
         { status: 500 }
       );
     }
 
-    const baseUrl = process.env.SUPABASE_URL!.replace(/\/$/, "");
-    const fileUrl = `${baseUrl}/storage/v1/object/public/policies/${filePath}`;
+    const base = process.env.SUPABASE_URL!.replace(/\/$/, "");
+    const fileUrl = `${base}/storage/v1/object/public/policies/${storagePath}`;
 
-    // 2) Upload file to OpenAI for vision/extraction
+    // 2) Upload file to OpenAI as assistant input
     const uploaded = await openai.files.create({
       file,
       purpose: "assistants",
     });
 
-  // 3) Ask gpt-4o for FULL structured JSON extraction
-const extractionPrompt = `
-You are an expert in extracting structured data from Australian insurance policy schedules.
+    // 3) Strict JSON extraction prompt
+    const extractionPrompt = `
+You extract structured data from Australian insurance policy schedules.
 
-IMPORTANT RULES (FOLLOW STRICTLY):
-- Return ONLY pure JSON. 
-- NO code blocks.
+STRICT RULES:
+- Return ONLY pure JSON.
 - NO markdown.
-- NO explanation.
-- NO backticks.
-- NO comments.
+- NO code fences.
+- NO explanations.
+- NO extra text.
 - JSON must start with '{' and end with '}'.
 
-Extract in this structure:
+Extract with this schema:
 
 {
-  "tables": { ... },
-  "text": "...",
+  "tables": {
+    "Table Name": [
+      ["Header1", "Header2"],
+      ["Row1Col1", "Row1Col2"]
+    ]
+  },
+  "text": "Full extracted readable text or summarised text.",
   "metadata": {
     "insurer": "...",
     "policy_number": "...",
@@ -91,73 +88,61 @@ Extract in this structure:
   }
 }
 
-If something is missing, set it to null.
+If any field is missing, set it to null.
 Never guess values.
-Never output markdown.
 `;
 
-// ...
-let extractionJson: any | null = null;
-let ocrTextToStore: string | null = null;
+    let extractionJson: any | null = null;
+    let ocrTextToStore: string | null = null;
 
-try {
-  const extraction = await openai.responses.create({
-    model: "gpt-4o",
-    input: [
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: extractionPrompt },
-          { type: "input_file", file_id: uploaded.id }
+    // 4) Primary extraction attempt using GPT-5-mini
+    try {
+      const result = await openai.responses.create({
+        model: "gpt-5-mini",
+        input: [
+          {
+            role: "user",
+            content: [
+              { type: "input_text", text: extractionPrompt },
+              { type: "input_file", file_id: uploaded.id },
+            ],
+          },
         ],
-      },
-    ],
-  });
+      });
 
-  let outputText: string =
-    extraction.output_text ??
-    extraction.output?.[0]?.content?.[0]?.text?.value ??
-    extraction.output?.[0]?.content?.[0]?.text ??
-    "";
+      // Always use output_text in new SDK
+      let output = result.output_text ?? "";
 
-  // Strip markdown fences if they appear
-  outputText = outputText
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .trim();
+      // Clean unwanted code fences
+      output = output
+        .replace(/```json/gi, "")
+        .replace(/```/g, "")
+        .trim();
 
-  // Now parse safely
-  extractionJson = JSON.parse(outputText);
-  ocrTextToStore = JSON.stringify(extractionJson, null, 2);
+      extractionJson = JSON.parse(output);
+      ocrTextToStore = JSON.stringify(extractionJson, null, 2);
+    } catch (err) {
+      console.error("Primary JSON extraction failed, fallback OCR:", err);
 
-} catch (err) {
-  console.error("Primary JSON extraction failed:", err);
-
-  // fallback OCR
-  const fallback = await openai.responses.create({
-    model: "gpt-4o",
-    input: [
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: "Extract the plain text only from this PDF. No JSON." },
-          { type: "input_file", file_id: uploaded.id }
+      // 5) Fallback plain-text OCR
+      const fb = await openai.responses.create({
+        model: "gpt-5-mini",
+        input: [
+          {
+            role: "user",
+            content: [
+              { type: "input_text", text: "Extract ONLY plain text. No JSON." },
+              { type: "input_file", file_id: uploaded.id },
+            ],
+          },
         ],
-      },
-    ],
-  });
+      });
 
-  const fbText: string =
-    fallback.output_text ??
-    fallback.output?.[0]?.content?.[0]?.text?.value ??
-    fallback.output?.[0]?.content?.[0]?.text ??
-    "";
+      ocrTextToStore = fb.output_text ?? "";
+      extractionJson = null;
+    }
 
-  extractionJson = null;
-  ocrTextToStore = fbText;
-}
-
-    // 5) Pull basic metadata if available
+    // 6) Metadata extraction if available
     const insurer =
       extractionJson?.metadata?.insurer ??
       extractionJson?.metadata?.issued_by ??
@@ -168,7 +153,7 @@ try {
       extractionJson?.metadata?.wording_reference ??
       null;
 
-    // 6) Insert into policies table
+    // 7) Insert policy into database
     const { data: policy, error: policyError } = await supabase
       .from("policies")
       .insert({
@@ -178,7 +163,7 @@ try {
         ocr_text: ocrTextToStore,
         insurer: insurer,
         wording_version: wordingVersion,
-        status: "uploaded", // will be updated by extract & match
+        status: "uploaded",
       })
       .select()
       .single();
@@ -190,19 +175,17 @@ try {
       );
     }
 
-    // 7) Auto-run extract-policy and match-policy on this new policy
-    const reqUrl = new URL(req.url);
-    const origin = `${reqUrl.protocol}//${reqUrl.host}`;
+    // 8) Auto-run extract-policy & match-policy
+    const origin = new URL(req.url).origin;
 
-    // fire-and-forget style, but we await so you get errors in logs
     try {
       await fetch(`${origin}/api/extract-policy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ policyId: policy.id }),
       });
-    } catch (e) {
-      console.error("Error calling /api/extract-policy:", e);
+    } catch (err) {
+      console.error("extract-policy failed:", err);
     }
 
     try {
@@ -211,22 +194,22 @@ try {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ policyId: policy.id }),
       });
-    } catch (e) {
-      console.error("Error calling /api/match-policy:", e);
+    } catch (err) {
+      console.error("match-policy failed:", err);
     }
 
     return NextResponse.json(
       {
         success: true,
         policy,
-        extraction: extractionJson,
+        extracted: extractionJson,
       },
       { status: 200 }
     );
   } catch (err: any) {
-    console.error("Unexpected /api/upload error:", err);
+    console.error("Unexpected upload error:", err);
     return NextResponse.json(
-      { error: "Unexpected server error", details: String(err?.message ?? err) },
+      { error: "Unexpected server error", details: err.message },
       { status: 500 }
     );
   }
