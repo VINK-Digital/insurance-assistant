@@ -6,18 +6,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// Normalize insurer names so "Pty Ltd" and "Pty Limited" match
-function normalizeInsurer(name: string | null) {
-  if (!name) return "";
-  return name
-    .toLowerCase()
-    .replace(/pty[\.\s]*limited/g, "pty ltd")   // convert "pty limited" → "pty ltd"
-    .replace(/limited/g, "ltd")                // convert "limited" → "ltd"
-    .replace(/\./g, "")                        // remove dots
-    .replace(/\s+/g, " ")                      // fix spacing
-    .trim();
-}
-
 export async function POST(req: NextRequest) {
   try {
     const { policyId } = await req.json();
@@ -29,7 +17,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1) Load policy
+    // 1) Load the policy (insurer + wording_version)
     const { data: policy, error: policyError } = await supabase
       .from("policies")
       .select("id, insurer, wording_version")
@@ -43,53 +31,88 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const extractedInsurer = normalizeInsurer(policy.insurer);
-    const extractedVersion = policy.wording_version.trim();
+    const insurerRaw = policy.insurer || "";
+    const versionRaw = policy.wording_version || "";
 
-    // 2) Load all wordings to match manually
-    const { data: wordings, error: wordingError } = await supabase
+    // Normalise helper
+    const norm = (s: string) =>
+      s
+        .toLowerCase()
+        .replace(/pty\.?|limited|ltd\.?/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const targetInsurer = norm(insurerRaw);
+    const targetVersion = versionRaw.toLowerCase();
+
+    // 2) Pull all candidate wordings for that insurer family
+    const mainWord = insurerRaw.split(" ")[0] || ""; // e.g. "DUAL", "Agile"
+    const { data: candidates, error: wordingError } = await supabase
       .from("policy_wording")
-      .select("id, insurer, wording_version");
+      .select("id, insurer, wording_version, file_name")
+      .ilike("insurer", `%${mainWord}%`);
 
-    if (wordingError || !wordings) {
+    if (wordingError) {
       return NextResponse.json(
-        { error: "Failed to load wordings", details: wordingError },
+        { error: "Failed to search wordings", details: wordingError },
         { status: 500 }
       );
     }
 
-    // 3) Find best match
-    const match = wordings.find((w) => {
-      const normalizedW = normalizeInsurer(w.insurer);
-      return (
-        normalizedW === extractedInsurer &&
-        w.wording_version === extractedVersion
-      );
-    });
-
-    if (!match) {
+    if (!candidates || candidates.length === 0) {
       return NextResponse.json(
         {
           error: "No matching wording found",
-          searched: {
-            extractedInsurer,
-            extractedVersion
-          },
-          availableWordings: wordings.map((w) => ({
-            id: w.id,
-            insurer: normalizeInsurer(w.insurer),
-            wording_version: w.wording_version
-          }))
+          details: { insurer_searched: insurerRaw, version_searched: versionRaw },
         },
         { status: 404 }
       );
     }
 
-    // 4) Update policy
+    // 3) Fuzzy match by wording_version / file_name
+    let bestMatch: any = null;
+
+    for (const w of candidates) {
+      const wInsurer = norm(w.insurer || "");
+      const wVersion = (w.wording_version || "").toLowerCase();
+      const fileName = (w.file_name || "").toLowerCase();
+
+      const insurerMatch =
+        wInsurer.includes(targetInsurer) || targetInsurer.includes(wInsurer);
+
+      const versionMatch =
+        !targetVersion && !wVersion
+          ? true
+          : targetVersion.includes(wVersion) ||
+            wVersion.includes(targetVersion) ||
+            fileName.includes(targetVersion) ||
+            targetVersion.includes(fileName);
+
+      if (insurerMatch && versionMatch) {
+        bestMatch = w;
+        break;
+      }
+    }
+
+    if (!bestMatch) {
+      return NextResponse.json(
+        {
+          error: "No matching wording found",
+          details: {
+            insurer_searched: insurerRaw,
+            version_searched: versionRaw,
+            candidates,
+          },
+        },
+        { status: 404 }
+      );
+    }
+
+    // 4) Update policy with wording_id + status
     const { data: updated, error: updateError } = await supabase
       .from("policies")
       .update({
-        wording_id: match.id,
+        wording_id: bestMatch.id,
         status: "matched",
       })
       .eq("id", policy.id)
@@ -104,10 +127,9 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json(
-      { success: true, policy: updated },
+      { success: true, policy: updated, matched_to: bestMatch },
       { status: 200 }
     );
-
   } catch (err: any) {
     return NextResponse.json(
       { error: "Unexpected error", details: String(err) },
