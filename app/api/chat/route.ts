@@ -11,175 +11,164 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// Helper to load full policy context
-async function loadPolicyContext(policyId: string) {
-  const { data: policy } = await supabase
-    .from("policies")
-    .select("*")
-    .eq("id", policyId)
-    .single();
-
-  if (!policy) return null;
-
-  const { data: wording } = await supabase
-    .from("policy_wording")
-    .select("*")
-    .eq("id", policy.wording_id)
-    .single();
-
-  const { data: analysis } = await supabase
-    .from("policy_analysis")
-    .select("*")
-    .eq("policy_id", policyId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single();
-
-  return { policy, wording, analysis };
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { message, customerId, policies, lastPolicyId } = body;
+    const { message, customerId, policies, lastPolicyId, clarification } =
+      await req.json();
 
-    if (!message || !customerId || !policies) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      );
-    }
+    // -------------------------------
+    // 1. If a policyId was already chosen earlier, use it
+    // -------------------------------
+    let selectedPolicyId = lastPolicyId;
 
-    // We ask GPT to choose the correct policy first.
-    const systemMessage = `
-You are an expert insurance assistant.
+    // -------------------------------
+    // 2. If no policy locked in, ask GPT to choose which policy user refers to
+    // -------------------------------
+    if (!selectedPolicyId && !clarification) {
+      const choosePrompt = `
+A customer asked: "${message}"
+Here are the available policies:
 
-You have multiple policies available for this customer. 
-Your job is to:
-1. Identify which policy the user's message is referring to.
-2. If the user's message could refer to multiple policies, ask for clarification.
-3. If the message clearly relates to the policy previously discussed, keep using it.
-4. Once a policy is identified, DO NOT hallucinate. Only answer using:
-   - The policy schedule OCR text
-   - The corresponding policy wording
-   - The structured comparison analysis
+${policies
+  .map(
+    (p: any, i: number) =>
+      `#${i + 1} - Policy ID: ${p.id}, File: ${p.file_name}, Insurer: ${
+        p.insurer
+      }, Wording Version: ${p.wording_version}`
+  )
+  .join("\n")}
 
-Return STRICT JSON:
+TASK:
+Return JSON ONLY.
 {
-  "selected_policy_id": "uuid or null",
-  "needs_clarification": true/false,
-  "clarification_question": "string or null",
-  "final_answer": "string or null"
+  "policyId": "<id-of-policy>",
+  "needs_clarification": false,
+  "clarification_question": null
+}
+
+If the question is ambiguous:
+{
+  "policyId": null,
+  "needs_clarification": true,
+  "clarification_question": "Which policy are you asking about: X or Y?"
 }
 `;
 
-    const policyListString = JSON.stringify(policies, null, 2);
+      const selection = await openai.responses.create({
+        model: "gpt-5-mini",
+        input: choosePrompt,
+      });
 
-    const choosePolicy = await openai.chat.completions.create({
-      model: "gpt-5-mini",
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: systemMessage },
-        {
-          role: "user",
-          content: `
-User message:
+      let out = selection.output_text ?? "{}";
+      out = out.replace(/```json/gi, "").replace(/```/g, "").trim();
+      const parsed = JSON.parse(out);
+
+      if (parsed.needs_clarification) {
+        return NextResponse.json({
+          clarification: true,
+          question: parsed.clarification_question,
+        });
+      }
+
+      selectedPolicyId = parsed.policyId;
+    }
+
+    // -------------------------------
+    // 3. Load POLICY SCHEDULE JSON from Supabase (ocr_text)
+    // -------------------------------
+    const { data: schedulePolicy } = await supabase
+      .from("policies")
+      .select("ocr_text, wording_id")
+      .eq("id", selectedPolicyId)
+      .single();
+
+    if (!schedulePolicy) {
+      return NextResponse.json(
+        { error: "Policy not found in database." },
+        { status: 404 }
+      );
+    }
+
+    let scheduleJSON: any = null;
+    try {
+      scheduleJSON = JSON.parse(schedulePolicy.ocr_text);
+    } catch {
+      scheduleJSON = { text: schedulePolicy.ocr_text };
+    }
+
+    // -------------------------------
+    // 4. Load WORDING TEXT + COMPARISON JSON
+    // -------------------------------
+    let wordingText = "";
+    let comparisonJSON: any = null;
+
+    if (schedulePolicy.wording_id) {
+      const { data: wording } = await supabase
+        .from("policy_wording")
+        .select("wording_text")
+        .eq("id", schedulePolicy.wording_id)
+        .single();
+
+      if (wording?.wording_text) {
+        wordingText = wording.wording_text;
+      }
+
+      const { data: comparison } = await supabase
+        .from("analysis")
+        .select("result_json")
+        .eq("policy_id", selectedPolicyId)
+        .order("id", { ascending: false })
+        .limit(1)
+        .single();
+
+      if (comparison?.result_json) {
+        comparisonJSON = comparison.result_json;
+      }
+    }
+
+    // -------------------------------
+    // 5. Now answer question using STRICT GROUNDED DATA
+    // -------------------------------
+    const answerPrompt = `
+You are an insurance assistant. 
+ANSWER USING ONLY THE DATA PROVIDED.
+DO NOT GUESS.
+DO NOT USE OUTSIDE KNOWLEDGE.
+
+Here is the POLICY SCHEDULE JSON:
+${JSON.stringify(scheduleJSON, null, 2)}
+
+Here is the POLICY WORDING TEXT (if available):
+${wordingText.slice(0, 20000)}
+
+Here is the COMPARISON RESULT JSON (if available):
+${JSON.stringify(comparisonJSON, null, 2)}
+
+User question:
 "${message}"
 
-Customer policies:
-${policyListString}
-
-Previously selected policy:
-${lastPolicyId ?? "none"}
-`
-        }
-      ]
-    });
-
-   const content = choosePolicy.choices[0].message.content;
-
-if (!content) {
-  return NextResponse.json(
-    { error: "AI returned empty content during policy selection" },
-    { status: 500 }
-  );
-}
-
-const selection = JSON.parse(content);
-
-    // If GPT needs clarifying, return question to frontend
-    if (selection.needs_clarification) {
-      return NextResponse.json({
-        clarification: true,
-        question: selection.clarification_question,
-      });
-    }
-
-    const selectedPolicyId =
-      selection.selected_policy_id || lastPolicyId || null;
-
-    if (!selectedPolicyId) {
-      return NextResponse.json({
-        clarification: true,
-        question: "Which policy would you like help with?",
-      });
-    }
-
-    // Load policy details (OCR + wording + analysis)
-    const context = await loadPolicyContext(selectedPolicyId);
-
-    if (!context) {
-      return NextResponse.json(
-        { error: "Policy context not found" },
-        { status: 500 }
-      );
-    }
-
-    const { policy, wording, analysis } = context;
-
-    // Build second-level GPT answer
-    const answerPrompt = `
-User question: "${message}"
-
-Policy schedule (OCR):
----
-${policy.ocr_text}
----
-
-Policy wording:
----
-${wording?.wording_text ?? "No wording text found"}
----
-
-Policy comparison analysis:
----
-${analysis?.comparison ? JSON.stringify(analysis.comparison) : "No analysis data available"}
----
-
-Answer the user using only the information above.
-If something is not found in the policy, say so honestly.
+TASKS:
+1. Answer the user's question using ONLY information from the JSON or wording text.
+2. If the question refers to a section, table, limit, extension, exclusion, deductible, etc — locate it in the JSON.
+3. If something is not present in the data, clearly state: "This information is not present in your policy schedule or wording."
+4. Keep the answer precise, accurate, non-speculative.
 `;
 
-    const final = await openai.chat.completions.create({
-      model: "gpt-5.1",
-      messages: [
-        { role: "system", content: "You are an insurance expert. Keep responses accurate and concise." },
-        { role: "user", content: answerPrompt }
-      ]
+    const final = await openai.responses.create({
+      model: "gpt-5-mini",
+      input: answerPrompt,
     });
 
-    const finalAnswer = final.choices[0].message.content;
+    const answer = final.output_text ?? "I'm sorry, I could not produce an answer.";
 
     return NextResponse.json({
       success: true,
-      answer: finalAnswer,
+      answer,
       selectedPolicyId,
     });
-
   } catch (err: any) {
-    console.error(err);
     return NextResponse.json(
-      { error: "Server error", details: err.message },
+      { error: "Chat error", details: err.message },
       { status: 500 }
     );
   }
