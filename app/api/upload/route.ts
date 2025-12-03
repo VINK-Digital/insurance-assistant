@@ -61,102 +61,101 @@ export async function POST(req: NextRequest) {
       purpose: "assistants",
     });
 
-    // 3) Ask gpt-4o for FULL structured JSON extraction
-    const extractionPrompt = `
-You are an expert in parsing Australian insurance policy schedules.
+  // 3) Ask gpt-4o for FULL structured JSON extraction
+const extractionPrompt = `
+You are an expert in extracting structured data from Australian insurance policy schedules.
 
-Read the attached PDF and return ONLY VALID JSON (no prose, no explanation) in this structure:
+IMPORTANT RULES (FOLLOW STRICTLY):
+- Return ONLY pure JSON. 
+- NO code blocks.
+- NO markdown.
+- NO explanation.
+- NO backticks.
+- NO comments.
+- JSON must start with '{' and end with '}'.
+
+Extract in this structure:
 
 {
-  "tables": { 
-    "Table Name": [
-      ["Header 1", "Header 2"],
-      ["Row1Col1", "Row1Col2"]
-    ]
-  },
-  "text": "Full plain-language text or narrative summary of the policy schedule.",
+  "tables": { ... },
+  "text": "...",
   "metadata": {
-    "insurer": "Name of insurer if present, else null",
-    "policy_number": "Policy number if present, else null",
-    "policy_type": "e.g. 'Association Liability', 'Hangarkeepers Liability'",
-    "wording_version": "Wording reference or version e.g. '11.20', 'V11.2', else null",
-    "effective_date": "Start date if present",
-    "expiry_date": "End date if present",
-    "currency": "Policy currency if present",
-    "coverage_limit": "Top-level limit if clearly defined, else null"
+    "insurer": "...",
+    "policy_number": "...",
+    "policy_type": "...",
+    "wording_version": "...",
+    "effective_date": "...",
+    "expiry_date": "...",
+    "currency": "...",
+    "coverage_limit": "..."
   }
 }
 
-VERY IMPORTANT:
-- If different sections (e.g. Section 1/2/3) have different limits, do NOT assume a single coverage_limit applies to all.
-- Preserve distinct sections inside "tables" or clearly explain in "text".
-- If information is missing, set fields to null instead of guessing.
+If something is missing, set it to null.
+Never guess values.
+Never output markdown.
 `;
 
-    let extractionJson: any | null = null;
-    let ocrTextToStore: string | null = null;
+// ...
+let extractionJson: any | null = null;
+let ocrTextToStore: string | null = null;
 
-    try {
-      const extraction = (await openai.responses.create({
-        model: "gpt-4o",
-        input: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: extractionPrompt,
-              },
-              {
-                type: "input_file",
-                file_id: uploaded.id,
-              },
-            ],
-          },
+try {
+  const extraction = await openai.responses.create({
+    model: "gpt-4o",
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: extractionPrompt },
+          { type: "input_file", file_id: uploaded.id }
         ],
-      })) as any;
+      },
+    ],
+  });
 
-      const outputText: string =
-        extraction.output?.[0]?.content?.[0]?.text?.value ??
-        extraction.output?.[0]?.content?.[0]?.text ??
-        extraction.output_text ??
-        "";
+  let outputText: string =
+    extraction.output_text ??
+    extraction.output?.[0]?.content?.[0]?.text?.value ??
+    extraction.output?.[0]?.content?.[0]?.text ??
+    "";
 
-      extractionJson = JSON.parse(outputText);
-      ocrTextToStore = JSON.stringify(extractionJson, null, 2);
-    } catch (err) {
-      // 4) Fallback: simple OCR text only
-      console.error("Primary JSON extraction failed, falling back to plain text:", err);
+  // Strip markdown fences if they appear
+  outputText = outputText
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
 
-      const fallbackPrompt = `
-You are doing fallback OCR.
+  // Now parse safely
+  extractionJson = JSON.parse(outputText);
+  ocrTextToStore = JSON.stringify(extractionJson, null, 2);
 
-Read the attached PDF and return ONLY the full extracted text as a plain string.
-No JSON, no extra commentary.
-`;
+} catch (err) {
+  console.error("Primary JSON extraction failed:", err);
 
-      const fallback = (await openai.responses.create({
-        model: "gpt-4o",
-        input: [
-          {
-            role: "user",
-            content: [
-              { type: "input_text", text: fallbackPrompt },
-              { type: "input_file", file_id: uploaded.id },
-            ],
-          },
+  // fallback OCR
+  const fallback = await openai.responses.create({
+    model: "gpt-4o",
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "Extract the plain text only from this PDF. No JSON." },
+          { type: "input_file", file_id: uploaded.id }
         ],
-      })) as any;
+      },
+    ],
+  });
 
-      const fbText: string =
-        fallback.output?.[0]?.content?.[0]?.text?.value ??
-        fallback.output?.[0]?.content?.[0]?.text ??
-        fallback.output_text ??
-        "";
+  const fbText: string =
+    fallback.output_text ??
+    fallback.output?.[0]?.content?.[0]?.text?.value ??
+    fallback.output?.[0]?.content?.[0]?.text ??
+    "";
 
-      extractionJson = null;
-      ocrTextToStore = fbText;
-    }
+  extractionJson = null;
+  ocrTextToStore = fbText;
+}
 
     // 5) Pull basic metadata if available
     const insurer =
