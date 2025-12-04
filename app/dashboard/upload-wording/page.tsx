@@ -1,60 +1,184 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+
+// Predefined insurers + wording versions
+const insurerOptions = [
+  { name: "DUAL Australia Pty Limited", defaultVersion: "11.20" },
+  { name: "Agile Underwriting Services Pty Ltd", defaultVersion: "2019" },
+  { name: "QBE Insurance Australia Limited", defaultVersion: "General" },
+  { name: "Chubb Insurance Australia Limited", defaultVersion: "2021" },
+];
 
 export default function UploadWordingPage() {
   const [file, setFile] = useState<File | null>(null);
-  const [status, setStatus] = useState("");
+  const [insurer, setInsurer] = useState("");
+  const [wordingVersion, setWordingVersion] = useState("");
+
+  const [status, setStatus] = useState<
+    "idle" | "uploading" | "extracting" | "saving" | "done" | "error"
+  >("idle");
+  const [progress, setProgress] = useState(0);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  // Auto-fill wording version when insurer is chosen
+  useEffect(() => {
+    const found = insurerOptions.find((i) => i.name === insurer);
+    if (found) setWordingVersion(found.defaultVersion);
+  }, [insurer]);
+
+  // Smooth progress bar transitions
+  useEffect(() => {
+    if (status === "uploading") setProgress(25);
+    if (status === "extracting") setProgress(60);
+    if (status === "saving") setProgress(85);
+    if (status === "done") setProgress(100);
+    if (status === "error") setProgress(100);
+  }, [status]);
+
+  // HUMAN readable status text
+  const statusText = {
+    idle: "Waiting for upload…",
+    uploading: "Uploading wording PDF…",
+    extracting: "Extracting text from document…",
+    saving: "Saving wording to database…",
+    done: "Wording uploaded successfully!",
+    error: errorMessage || "Upload failed",
+  };
 
   async function handleUpload() {
-    setStatus("");
-
-    if (!file) {
-      setStatus("Please select a PDF file");
+    if (!file || !insurer || !wordingVersion) {
+      setErrorMessage("Please fill all fields and select a file.");
+      setStatus("error");
       return;
     }
 
-    const form = new FormData();
-    form.append("file0", file);
+    try {
+      setStatus("uploading");
+      setErrorMessage("");
 
-    const webhook = process.env.NEXT_PUBLIC_N8N_WORDING_WEBHOOK;
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("insurer", insurer);
+      formData.append("wordingVersion", wordingVersion);
 
-    const res = await fetch(webhook!, {
-      method: "POST",
-      body: form,
-    });
+      const res = await fetch("/api/upload-wording", {
+        method: "POST",
+        body: formData,
+      });
 
-    if (res.ok) {
-      setStatus("Wording uploaded successfully!");
-      setFile(null);
-    } else {
-      setStatus("Upload failed.");
+      if (!res.ok) {
+        const json = await res.json();
+        setErrorMessage(json.error || "Upload failed");
+        setStatus("error");
+        return;
+      }
+
+      // All good!
+      setStatus("done");
+    } catch (err: any) {
+      setErrorMessage(err.message || "Unexpected error");
+      setStatus("error");
     }
   }
 
   return (
-    <div className="max-w-xl mx-auto p-6">
-      <h1 className="text-2xl font-bold mb-4">Upload Policy Wording</h1>
+    <div className="p-8 max-w-2xl mx-auto">
+      <h1 className="text-3xl font-bold mb-6 text-gray-900">
+        Upload Policy Wording
+      </h1>
 
-      {/* File upload */}
-      <label className="block font-semibold mb-1">Select PDF</label>
-      <input
-        type="file"
-        accept="application/pdf"
-        className="border p-2 rounded w-full mb-4"
-        onChange={(e) => setFile(e.target.files?.[0] || null)}
-      />
+      <div className="bg-white shadow-xl rounded-xl p-6 border border-gray-200 space-y-6">
+        {/* Insurer Dropdown */}
+        <div>
+          <label className="block text-sm font-semibold mb-1 text-gray-700">
+            Select Insurer
+          </label>
 
-      <button
-        onClick={handleUpload}
-        className="bg-blue-600 text-white px-4 py-2 rounded w-full"
-      >
-        Upload Wording
-      </button>
+          <select
+            className="w-full border rounded-lg p-2 bg-gray-50"
+            value={insurer}
+            onChange={(e) => setInsurer(e.target.value)}
+          >
+            <option value="">-- Choose an insurer --</option>
+            {insurerOptions.map((opt) => (
+              <option key={opt.name} value={opt.name}>
+                {opt.name}
+              </option>
+            ))}
+          </select>
+        </div>
 
-      {status && (
-        <p className="mt-4 text-center text-gray-700">{status}</p>
-      )}
+        {/* Wording Version */}
+        <div>
+          <label className="block text-sm font-semibold mb-1 text-gray-700">
+            Wording Version
+          </label>
+          <input
+            type="text"
+            value={wordingVersion}
+            onChange={(e) => setWordingVersion(e.target.value)}
+            placeholder="e.g. 11.20"
+            className="w-full border rounded-lg p-2 bg-gray-50"
+          />
+        </div>
+
+        {/* File Upload */}
+        <div>
+          <label className="block text-sm font-semibold mb-1 text-gray-700">
+            Upload wording PDF
+          </label>
+          <input
+            type="file"
+            accept="application/pdf"
+            className="w-full text-sm"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
+          />
+        </div>
+
+        {/* Progress Bar */}
+        <div className="pt-2">
+          <div className="text-sm font-semibold mb-2 text-gray-700">
+            {statusText[status]}
+          </div>
+
+          <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+            <motion.div
+              className="h-3 bg-green-600"
+              animate={{ width: `${progress}%` }}
+              transition={{ duration: 0.4 }}
+            />
+          </div>
+        </div>
+
+        {/* Upload Button */}
+        <button
+          onClick={handleUpload}
+          className="w-full py-3 bg-green-700 text-white font-semibold rounded-lg hover:bg-green-800 transition shadow"
+        >
+          Upload Wording
+        </button>
+
+        {/* Success Animation */}
+        <AnimatePresence>
+          {status === "done" && (
+            <motion.div
+              className="text-green-700 font-semibold text-center mt-4"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              ✓ Successfully uploaded!
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Error */}
+        {status === "error" && (
+          <div className="text-red-600 text-sm font-semibold">{errorMessage}</div>
+        )}
+      </div>
     </div>
   );
 }
