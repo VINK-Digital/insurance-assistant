@@ -2,12 +2,9 @@
 
 import { useState, useEffect } from "react";
 
-// Predefined insurers + wording versions
 const insurerOptions = [
   { name: "DUAL Australia Pty Limited", defaultVersion: "11.20" },
   { name: "Agile Underwriting Services Pty Ltd", defaultVersion: "2019" },
-  { name: "QBE Insurance Australia Limited", defaultVersion: "General" },
-  { name: "Chubb Insurance Australia Limited", defaultVersion: "2021" },
 ];
 
 export default function UploadWordingPage() {
@@ -15,51 +12,80 @@ export default function UploadWordingPage() {
   const [insurer, setInsurer] = useState("");
   const [wordingVersion, setWordingVersion] = useState("");
   const [status, setStatus] = useState<
-    "idle" | "uploading" | "extracting" | "saving" | "done" | "error"
+    "idle" | "extracting" | "uploading" | "saving" | "done" | "error"
   >("idle");
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
 
-  // Auto-fill wording version when insurer is selected
   useEffect(() => {
     const found = insurerOptions.find((i) => i.name === insurer);
     if (found) setWordingVersion(found.defaultVersion);
   }, [insurer]);
 
-  // Smooth progress bar state changes
   useEffect(() => {
     if (status === "idle") setProgress(0);
-    if (status === "uploading") setProgress(30);
-    if (status === "extracting") setProgress(55);
+    if (status === "extracting") setProgress(40);
+    if (status === "uploading") setProgress(65);
     if (status === "saving") setProgress(85);
     if (status === "done") setProgress(100);
     if (status === "error") setProgress(100);
   }, [status]);
 
-  const statusText = {
-    idle: "Waiting for upload…",
-    uploading: "Uploading wording PDF…",
-    extracting: "Extracting text from document…",
-    saving: "Saving wording to database…",
-    done: "Wording uploaded successfully!",
-    error: errorMessage || "Upload failed",
-  };
+  async function extractTextClientSide(pdfFile: File): Promise<string> {
+    setStatus("extracting");
+
+    const openai = new (require("openai").OpenAI)({
+      apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY!,
+    });
+
+    // Upload PDF to OpenAI
+    const uploaded = await openai.files.create({
+      file: pdfFile,
+      purpose: "assistants",
+    });
+
+    // Extract wording using GPT-5-mini
+    const extraction = await openai.responses.create({
+      model: "gpt-5-mini",
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "Extract the FULL wording text from this PDF. Return ONLY the plain text wording. No summaries.",
+            },
+            { type: "input_file", file_id: uploaded.id },
+          ],
+        },
+      ],
+    });
+
+    return extraction.output_text || "";
+  }
 
   async function handleUpload() {
-    if (!file || !insurer || !wordingVersion) {
-      setErrorMessage("Please fill all fields and select a file.");
-      setStatus("error");
-      return;
-    }
-
     try {
-      setStatus("uploading");
-      setErrorMessage("");
+      if (!file || !insurer || !wordingVersion) {
+        setErrorMessage("Please fill all fields and select a file.");
+        setStatus("error");
+        return;
+      }
 
+      // 1) Extract text client-side
+      const extractedText = await extractTextClientSide(file);
+
+      setStatus("uploading");
+
+      // 2) Upload to backend
       const formData = new FormData();
       formData.append("file", file);
       formData.append("insurer", insurer);
       formData.append("wordingVersion", wordingVersion);
+      formData.append("extractedText", extractedText);
+
+      setStatus("saving");
 
       const res = await fetch("/api/upload-wording", {
         method: "POST",
@@ -82,15 +108,12 @@ export default function UploadWordingPage() {
 
   return (
     <div className="p-8 max-w-2xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6 text-gray-900">
-        Upload Policy Wording
-      </h1>
+      <h1 className="text-3xl font-bold mb-6">Upload Policy Wording</h1>
 
       <div className="bg-white shadow-lg rounded-xl p-6 border border-gray-200 space-y-6">
-
         {/* Insurer Dropdown */}
         <div>
-          <label className="block text-sm font-semibold mb-1 text-gray-700">
+          <label className="block text-sm font-semibold mb-1">
             Select Insurer
           </label>
           <select
@@ -98,10 +121,10 @@ export default function UploadWordingPage() {
             value={insurer}
             onChange={(e) => setInsurer(e.target.value)}
           >
-            <option value="">-- Choose an insurer --</option>
-            {insurerOptions.map((opt) => (
-              <option key={opt.name} value={opt.name}>
-                {opt.name}
+            <option value="">Choose insurer</option>
+            {insurerOptions.map((i) => (
+              <option key={i.name} value={i.name}>
+                {i.name}
               </option>
             ))}
           </select>
@@ -109,22 +132,21 @@ export default function UploadWordingPage() {
 
         {/* Wording Version */}
         <div>
-          <label className="block text-sm font-semibold mb-1 text-gray-700">
+          <label className="block text-sm font-semibold mb-1">
             Wording Version
           </label>
           <input
-            type="text"
+            className="w-full border rounded-lg p-2 bg-gray-50"
             value={wordingVersion}
             onChange={(e) => setWordingVersion(e.target.value)}
             placeholder="e.g. 11.20"
-            className="w-full border rounded-lg p-2 bg-gray-50"
           />
         </div>
 
         {/* File Upload */}
         <div>
-          <label className="block text-sm font-semibold mb-1 text-gray-700">
-            Upload wording PDF
+          <label className="block text-sm font-semibold mb-1">
+            Upload Policy Wording PDF
           </label>
           <input
             type="file"
@@ -134,21 +156,20 @@ export default function UploadWordingPage() {
           />
         </div>
 
-        {/* Progress Bar */}
-        <div className="pt-2">
-          <div className="text-sm font-semibold mb-2 text-gray-700">
-            {statusText[status]}
+        {/* Progress */}
+        <div>
+          <div className="text-sm font-semibold mb-1">
+            {status === "idle" ? "Waiting…" : status.replace("-", " ")}
           </div>
-
           <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
             <div
               className="h-3 bg-green-600 transition-all duration-300"
               style={{ width: `${progress}%` }}
-            ></div>
+            />
           </div>
         </div>
 
-        {/* Upload Button */}
+        {/* Upload button */}
         <button
           onClick={handleUpload}
           className="w-full py-3 bg-green-700 text-white font-semibold rounded-lg hover:bg-green-800 transition shadow"
@@ -156,13 +177,17 @@ export default function UploadWordingPage() {
           Upload Wording
         </button>
 
-        {/* Error */}
         {status === "error" && (
           <div className="text-red-600 text-sm font-semibold">
             {errorMessage}
           </div>
         )}
 
+        {status === "done" && (
+          <div className="text-green-700 text-sm font-semibold">
+            ✓ Wording uploaded successfully
+          </div>
+        )}
       </div>
     </div>
   );
