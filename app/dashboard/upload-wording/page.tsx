@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 
 // Predefined insurers + wording versions
 const insurerOptions = [
@@ -15,29 +14,28 @@ export default function UploadWordingPage() {
   const [file, setFile] = useState<File | null>(null);
   const [insurer, setInsurer] = useState("");
   const [wordingVersion, setWordingVersion] = useState("");
-
   const [status, setStatus] = useState<
     "idle" | "uploading" | "extracting" | "saving" | "done" | "error"
   >("idle");
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
 
-  // Auto-fill wording version when insurer is chosen
+  // Auto-fill wording version when insurer is selected
   useEffect(() => {
     const found = insurerOptions.find((i) => i.name === insurer);
     if (found) setWordingVersion(found.defaultVersion);
   }, [insurer]);
 
-  // Smooth progress bar transitions
+  // Smooth progress bar state changes
   useEffect(() => {
-    if (status === "uploading") setProgress(25);
-    if (status === "extracting") setProgress(60);
+    if (status === "idle") setProgress(0);
+    if (status === "uploading") setProgress(30);
+    if (status === "extracting") setProgress(55);
     if (status === "saving") setProgress(85);
     if (status === "done") setProgress(100);
     if (status === "error") setProgress(100);
   }, [status]);
 
-  // HUMAN readable status text
   const statusText = {
     idle: "Waiting for upload…",
     uploading: "Uploading wording PDF…",
@@ -75,7 +73,6 @@ export default function UploadWordingPage() {
         return;
       }
 
-      // All good!
       setStatus("done");
     } catch (err: any) {
       setErrorMessage(err.message || "Unexpected error");
@@ -89,13 +86,13 @@ export default function UploadWordingPage() {
         Upload Policy Wording
       </h1>
 
-      <div className="bg-white shadow-xl rounded-xl p-6 border border-gray-200 space-y-6">
+      <div className="bg-white shadow-lg rounded-xl p-6 border border-gray-200 space-y-6">
+
         {/* Insurer Dropdown */}
         <div>
           <label className="block text-sm font-semibold mb-1 text-gray-700">
             Select Insurer
           </label>
-
           <select
             className="w-full border rounded-lg p-2 bg-gray-50"
             value={insurer}
@@ -144,11 +141,10 @@ export default function UploadWordingPage() {
           </div>
 
           <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-            <motion.div
-              className="h-3 bg-green-600"
-              animate={{ width: `${progress}%` }}
-              transition={{ duration: 0.4 }}
-            />
+            <div
+              className="h-3 bg-green-600 transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            ></div>
           </div>
         </div>
 
@@ -160,24 +156,13 @@ export default function UploadWordingPage() {
           Upload Wording
         </button>
 
-        {/* Success Animation */}
-        <AnimatePresence>
-          {status === "done" && (
-            <motion.div
-              className="text-green-700 font-semibold text-center mt-4"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              ✓ Successfully uploaded!
-            </motion.div>
-          )}
-        </AnimatePresence>
-
         {/* Error */}
         {status === "error" && (
-          <div className="text-red-600 text-sm font-semibold">{errorMessage}</div>
+          <div className="text-red-600 text-sm font-semibold">
+            {errorMessage}
+          </div>
         )}
+
       </div>
     </div>
   );
