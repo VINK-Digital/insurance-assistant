@@ -1,4 +1,3 @@
-console.log("ENV KEY STARTS WITH:", process.env.OPENAI_API_KEY?.slice(0, 8));
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -16,19 +15,25 @@ const supabase = createClient(
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, policies = [], lastPolicyId, clarification } =
-      await req.json();
+    const {
+      message,
+      customerId,
+      policies = [],
+      lastPolicyId,
+      clarification,
+    } = await req.json();
 
     let selectedPolicyId = lastPolicyId;
 
     // -------------------------------------------------
-    // 1. Policy Selection
+    // 1. POLICY SELECTION USING GPT-5-MINI
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification) {
       const choosePrompt = `
 A customer asked: "${message}"
 
-POLICIES:
+Here are the available policies:
+
 ${policies
   .map(
     (p: any, i: number) =>
@@ -36,7 +41,7 @@ ${policies
   )
   .join("\n")}
 
-Return ONLY one JSON:
+Return ONLY ONE JSON object.
 
 If clear:
 { "policyId": "<id>", "needs_clarification": false }
@@ -46,8 +51,9 @@ If unclear:
 `;
 
       const chooseResp = await openai.responses.create({
-        model: "gpt-5.1-mini",
-        input: choosePrompt,   // 🔥 ONE STRING (this is the required format)
+        model: "gpt-5-mini",
+        input: choosePrompt,
+        max_output_tokens: 100,
       });
 
       let raw = chooseResp.output_text || "{}";
@@ -75,7 +81,7 @@ If unclear:
     }
 
     // -------------------------------------------------
-    // 2. Load Policy + Wording
+    // 2. LOAD POLICY + WORDING
     // -------------------------------------------------
     const { data: policy } = await supabase
       .from("policies")
@@ -84,10 +90,14 @@ If unclear:
       .single();
 
     if (!policy) {
-      return NextResponse.json({ error: "Policy not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "Policy not found" },
+        { status: 404 }
+      );
     }
 
-    let scheduleJSON: any = {};
+    let scheduleJSON: any;
+
     try {
       scheduleJSON = JSON.parse(policy.ocr_text);
     } catch {
@@ -118,44 +128,59 @@ If unclear:
     }
 
     // -------------------------------------------------
-    // 3. Build One Giant String Prompt
+    // 3. BUILD ONE BIG STRING PROMPT (SDK v6 REQUIRED FORMAT)
     // -------------------------------------------------
-    const MAX = 20000;
+    const MAX = 20000; // keep input under safe limit
 
     const finalPrompt = `
-You are VINK — a policy comparison assistant.
+You are VINK — an insurance assistant for brokers.
 
 RULES:
-- Use ONLY the schedule, wording, and comparison JSON.
+- Use ONLY the schedule, wording text, and comparison JSON.
 - If something is missing, say:
   "This information is not present in the schedule or wording."
-- Keep answers short.
+- Keep answers concise.
+
+---
 
 SCHEDULE_JSON:
 ${JSON.stringify(scheduleJSON).slice(0, MAX)}
 
+---
+
 WORDING_TEXT:
 ${wordingText.slice(0, MAX)}
+
+---
 
 COMPARISON_JSON:
 ${JSON.stringify(comparisonJSON).slice(0, MAX)}
 
+---
+
 USER QUESTION:
 ${message}
+
+---
+
+Provide the best possible answer using the information above.
 `;
 
     // -------------------------------------------------
-    // 4. Ask GPT-5.1-mini
+    // 4. ASK GPT-5-MINI 
     // -------------------------------------------------
     const resp = await openai.responses.create({
-      model: "gpt-5.1-mini",
-      input: finalPrompt,     // 🔥 ONE STRING — the ONLY format your SDK accepts
+      model: "gpt-5-mini",       
+      input: finalPrompt,        
       max_output_tokens: 400,
     });
 
     const answer =
       resp.output_text || "I'm sorry — I could not generate an answer.";
 
+    // -------------------------------------------------
+    // 5. RETURN ANSWER TO FRONTEND
+    // -------------------------------------------------
     return NextResponse.json({
       success: true,
       answer,
