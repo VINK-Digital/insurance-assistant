@@ -31,7 +31,7 @@ Here are the available policies:
 
 ${policies
   .map(
-    (p, i) =>
+    (p: any, i: number) =>
       `#${i + 1}: Policy ID: ${p.id}, File: ${p.file_name}, Insurer: ${
         p.insurer
       }, Wording Version: ${p.wording_version}`
