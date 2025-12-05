@@ -12,7 +12,7 @@ export default function UploadWordingPage() {
   const [insurer, setInsurer] = useState("");
   const [wordingVersion, setWordingVersion] = useState("");
   const [status, setStatus] = useState<
-    "idle" | "extracting" | "uploading" | "saving" | "done" | "error"
+    "idle" | "uploading" | "sending" | "done" | "error"
   >("idle");
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
@@ -24,46 +24,11 @@ export default function UploadWordingPage() {
 
   useEffect(() => {
     if (status === "idle") setProgress(0);
-    if (status === "extracting") setProgress(40);
-    if (status === "uploading") setProgress(65);
-    if (status === "saving") setProgress(85);
+    if (status === "uploading") setProgress(50);
+    if (status === "sending") setProgress(75);
     if (status === "done") setProgress(100);
     if (status === "error") setProgress(100);
   }, [status]);
-
-  async function extractTextClientSide(pdfFile: File): Promise<string> {
-    setStatus("extracting");
-
-    const openai = new (require("openai").OpenAI)({
-      apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY!,
-    });
-
-    // Upload PDF to OpenAI
-    const uploaded = await openai.files.create({
-      file: pdfFile,
-      purpose: "assistants",
-    });
-
-    // Extract wording using GPT-5-mini
-    const extraction = await openai.responses.create({
-      model: "gpt-5-mini",
-      input: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text:
-                "Extract the FULL wording text from this PDF. Return ONLY the plain text wording. No summaries.",
-            },
-            { type: "input_file", file_id: uploaded.id },
-          ],
-        },
-      ],
-    });
-
-    return extraction.output_text || "";
-  }
 
   async function handleUpload() {
     try {
@@ -73,19 +38,14 @@ export default function UploadWordingPage() {
         return;
       }
 
-      // 1) Extract text client-side
-      const extractedText = await extractTextClientSide(file);
-
       setStatus("uploading");
 
-      // 2) Upload to backend
       const formData = new FormData();
       formData.append("file", file);
       formData.append("insurer", insurer);
       formData.append("wordingVersion", wordingVersion);
-      formData.append("extractedText", extractedText);
 
-      setStatus("saving");
+      setStatus("sending");
 
       const res = await fetch("/api/upload-wording", {
         method: "POST",
