@@ -190,10 +190,41 @@ RULES:
     // -------------------------------------------------
     // 5. ASK GPT
     // -------------------------------------------------
-    const aiResponse = await openai.responses.create({
-      model: "gpt-5-mini",
-      input: inputBlocks,
-    });
+   const aiResponse = await openai.responses.create({
+  model: "gpt-5-mini",
+  input: [
+    {
+      type: "input_text",
+      text: `
+You are VINK — an insurance assistant for brokers.
+
+RULES:
+- Only answer using the provided Schedule, Wording Text, and Comparison JSON.
+- If missing: say "This information is not present in the schedule or wording."
+- Prefer SCHEDULE for limits/deductibles.
+- Prefer WORDING for definitions.
+- Keep responses to 2 short paragraphs or bullet points.
+USER QUESTION: ${message}
+`
+    },
+    {
+      type: "input_text",
+      text: "SCHEDULE_JSON:\n" +
+        JSON.stringify(scheduleJSON).slice(0, 20000)
+    },
+    {
+      type: "input_text",
+      text: "WORDING_TEXT:\n" +
+        wordingText.slice(0, 20000)
+    },
+    {
+      type: "input_text",
+      text: "COMPARISON_JSON:\n" +
+        JSON.stringify(comparisonJSON).slice(0, 20000)
+    }
+  ]
+});
+
 
     const answer =
       aiResponse.output_text ??
