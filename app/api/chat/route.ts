@@ -4,7 +4,9 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -19,7 +21,7 @@ export async function POST(req: NextRequest) {
     let selectedPolicyId = lastPolicyId;
 
     // -------------------------------------------------
-    // 1. POLICY SELECTION LOGIC (uses GPT-5.1-mini)
+    // 1. POLICY SELECTION USING GPT
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification) {
       const choosePrompt = `
@@ -29,7 +31,7 @@ Here are the available policies:
 
 ${policies
   .map(
-    (p: any, i: number) =>
+    (p, i) =>
       `#${i + 1}: Policy ID: ${p.id}, File: ${p.file_name}, Insurer: ${
         p.insurer
       }, Wording Version: ${p.wording_version}`
@@ -37,7 +39,7 @@ ${policies
   .join("\n")}
 
 TASK:
-Return ONLY ONE JSON object.
+Return ONLY JSON:
 
 If clear:
 {
@@ -46,7 +48,7 @@ If clear:
   "clarification_question": null
 }
 
-If ambiguous:
+If not clear:
 {
   "policyId": null,
   "needs_clarification": true,
@@ -54,22 +56,16 @@ If ambiguous:
 }
 `;
 
-      const resp = await openai.responses.create({
+      const ai = await openai.chat.completions.create({
         model: "gpt-5.1-mini",
-        input: [
-          {
-            type: "message",
-            role: "user",
-            content: choosePrompt,
-          },
-        ],
+        temperature: 0,
+        messages: [{ role: "user", content: choosePrompt }],
       });
 
-      let raw = resp.output_text ?? "{}";
+      let raw = ai.choices[0].message?.content ?? "{}";
       raw = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
 
       let parsed: any = {};
-
       try {
         parsed = JSON.parse(raw);
       } catch {
@@ -90,7 +86,7 @@ If ambiguous:
     }
 
     // -------------------------------------------------
-    // 2. LOAD POLICY DATA
+    // 2. LOAD POLICY SCHEDULE
     // -------------------------------------------------
     const { data: policy } = await supabase
       .from("policies")
@@ -99,7 +95,10 @@ If ambiguous:
       .single();
 
     if (!policy) {
-      return NextResponse.json({ error: "Policy not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "Policy not found" },
+        { status: 404 }
+      );
     }
 
     let scheduleJSON: any = {};
@@ -110,7 +109,7 @@ If ambiguous:
     }
 
     // -------------------------------------------------
-    // 3. LOAD WORDING + COMPARISON
+    // 3. LOAD WORDING + COMPARISON JSON
     // -------------------------------------------------
     let wordingText = "";
     let comparisonJSON = null;
@@ -136,70 +135,46 @@ If ambiguous:
     }
 
     // -------------------------------------------------
-    // 4. GPT-5.1-mini ANALYSIS PROMPT
+    // 4. BUILD FINAL PROMPT FOR GPT-5.1-mini
     // -------------------------------------------------
     const MAX = 20000;
 
-    const inputBlocks = [
-      // System
-      {
-        type: "message",
-        role: "system",
-        content: `
+    const finalPrompt = `
 You are VINK — an insurance assistant for brokers.
-Use ONLY the provided Schedule JSON, Wording Text, and Comparison JSON.
-If information is missing, say:
-"This information is not present in the schedule or wording."
-Keep responses short and factual.
-`,
-      },
 
-      // Schedule
-      {
-        type: "message",
-        role: "user",
-        content: "SCHEDULE_JSON:\n" + JSON.stringify(scheduleJSON).slice(0, MAX),
-      },
+RULES:
+- Use ONLY the following: SCHEDULE_JSON, WORDING_TEXT, COMPARISON_JSON.
+- If missing, say: "This information is not present in the schedule or wording."
+- Prefer SCHEDULE for limits/deductibles.
+- Prefer WORDING for definitions.
+- Keep answers short and factual.
 
-      // Wording
-      {
-        type: "message",
-        role: "user",
-        content: "WORDING_TEXT:\n" + wordingText.slice(0, MAX),
-      },
+SCHEDULE_JSON:
+${JSON.stringify(scheduleJSON).slice(0, MAX)}
 
-      // Comparison
-      {
-        type: "message",
-        role: "user",
-        content:
-          "COMPARISON_JSON:\n" +
-          JSON.stringify(comparisonJSON).slice(0, MAX),
-      },
+WORDING_TEXT:
+${wordingText.slice(0, MAX)}
 
-      // User question
-      {
-        type: "message",
-        role: "user",
-        content: `USER QUESTION: ${message}`,
-      },
-    ];
+COMPARISON_JSON:
+${JSON.stringify(comparisonJSON).slice(0, MAX)}
+
+USER QUESTION:
+"${message}"
+`;
 
     // -------------------------------------------------
-    // 5. CALL GPT-5.1-mini
+    // 5. ASK GPT-5.1-mini
     // -------------------------------------------------
-    const ai = await openai.responses.create({
+    const answerRes = await openai.chat.completions.create({
       model: "gpt-5.1-mini",
-      input: inputBlocks,
-      max_output_tokens: 300,
+      temperature: 0,
+      messages: [{ role: "user", content: finalPrompt }],
     });
 
     const answer =
-      ai.output_text ?? "I'm sorry — I could not generate an answer.";
+      answerRes.choices[0].message?.content ??
+      "I'm sorry — I could not generate an answer.";
 
-    // -------------------------------------------------
-    // 6. SEND BACK TO UI
-    // -------------------------------------------------
     return NextResponse.json({
       success: true,
       answer,
