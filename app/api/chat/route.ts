@@ -15,28 +15,27 @@ const supabase = createClient(
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, customerId, policies = [], lastPolicyId, clarification } =
+    const { message, policies = [], lastPolicyId, clarification } =
       await req.json();
 
     let selectedPolicyId = lastPolicyId;
 
     // -------------------------------------------------
-    // 1. POLICY SELECTION (GPT-5.1-mini)
+    // 1. Policy Selection
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification) {
       const choosePrompt = `
 A customer asked: "${message}"
 
-Here are the available policies:
-
+POLICIES:
 ${policies
   .map(
     (p: any, i: number) =>
-      `#${i + 1}: Policy ID: ${p.id}, File: ${p.file_name}, Insurer: ${p.insurer}, Wording Version: ${p.wording_version}`
+      `#${i + 1}: Policy ID=${p.id}, File=${p.file_name}, Insurer=${p.insurer}, Version=${p.wording_version}`
   )
   .join("\n")}
 
-Return ONLY ONE JSON object.
+Return ONLY one JSON:
 
 If clear:
 { "policyId": "<id>", "needs_clarification": false }
@@ -47,13 +46,14 @@ If unclear:
 
       const chooseResp = await openai.responses.create({
         model: "gpt-5.1-mini",
-        input: choosePrompt,
+        input: choosePrompt,   // 🔥 ONE STRING (this is the required format)
       });
 
       let raw = chooseResp.output_text || "{}";
       raw = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
 
       let parsed: any = {};
+
       try {
         parsed = JSON.parse(raw);
       } catch {
@@ -74,7 +74,7 @@ If unclear:
     }
 
     // -------------------------------------------------
-    // 2. LOAD POLICY + WORDING
+    // 2. Load Policy + Wording
     // -------------------------------------------------
     const { data: policy } = await supabase
       .from("policies")
@@ -117,42 +117,38 @@ If unclear:
     }
 
     // -------------------------------------------------
-    // 3. BUILD INPUT FOR GPT-5.1-mini
+    // 3. Build One Giant String Prompt
     // -------------------------------------------------
     const MAX = 20000;
 
-    const blocks = [
-      `
-You are VINK — an insurance assistant for brokers.
-Use ONLY the data provided.
-If something is missing, say:
-"This information is not present in the schedule or wording."
-Keep answers short and factual.
-      `,
-      `
+    const finalPrompt = `
+You are VINK — a policy comparison assistant.
+
+RULES:
+- Use ONLY the schedule, wording, and comparison JSON.
+- If something is missing, say:
+  "This information is not present in the schedule or wording."
+- Keep answers short.
+
 SCHEDULE_JSON:
 ${JSON.stringify(scheduleJSON).slice(0, MAX)}
-      `,
-      `
+
 WORDING_TEXT:
 ${wordingText.slice(0, MAX)}
-      `,
-      `
+
 COMPARISON_JSON:
 ${JSON.stringify(comparisonJSON).slice(0, MAX)}
-      `,
-      `
+
 USER QUESTION:
 ${message}
-      `,
-    ];
+`;
 
     // -------------------------------------------------
-    // 4. ASK GPT-5.1-mini
+    // 4. Ask GPT-5.1-mini
     // -------------------------------------------------
     const resp = await openai.responses.create({
       model: "gpt-5.1-mini",
-      input: blocks, // <-- THIS IS VALID FOR SDK v6
+      input: finalPrompt,     // 🔥 ONE STRING — the ONLY format your SDK accepts
       max_output_tokens: 400,
     });
 
