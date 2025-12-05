@@ -1,229 +1,93 @@
-"use client";
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-import { useState, useEffect, useRef } from "react";
+import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { createClient } from "@supabase/supabase-js";
 
+// USE PUBLIC KEY ENV HERE
 const openai = new OpenAI({
   apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY!,
-  dangerouslyAllowBrowser: true,
 });
 
-export default function ChatPage() {
-  const [customers, setCustomers] = useState<any[]>([]);
-  const [customerId, setCustomerId] = useState<string | null>(null);
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
-  const [policies, setPolicies] = useState<any[]>([]);
-  const [messages, setMessages] = useState<any[]>([]);
-  const [input, setInput] = useState("");
-  const [lastPolicyId, setLastPolicyId] = useState<string | null>(null);
-  const [clarification, setClarification] = useState<string | null>(null);
+export async function POST(req: NextRequest) {
+  try {
+    const {
+      message,
+      customerId,
+      policies = [],
+      lastPolicyId,
+      clarification,
+    } = await req.json();
 
-  const [loading, setLoading] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+    let selectedPolicyId: string | null = lastPolicyId || null;
 
-  // Auto scroll to bottom when messages change
-  useEffect(() => {
-    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  // Load all customers for dropdown
-  useEffect(() => {
-    fetch("/api/customers")
-      .then((r) => r.json())
-      .then((data) => setCustomers(data.customers || []));
-  }, []);
-
-  // Load policies when customer is selected
-  useEffect(() => {
-    if (!customerId) return;
-
-    fetch(`/api/customers?customerId=${customerId}`)
-      .then((r) => r.json())
-      .then((data) => {
-        setPolicies(data.policies || []);
-        setMessages([]); // Reset chat for new customer
-        setLastPolicyId(null); // Unlock memory
-      });
-  }, [customerId]);
-
-  // Helper: pick a policy (for now: first one)
-  function getActivePolicy() {
-    if (policies.length === 0) return null;
-    if (lastPolicyId) {
-      const found = policies.find((p) => p.id === lastPolicyId);
-      if (found) return found;
-    }
-    // Fallback: first policy
-    return policies[0];
-  }
-
-  // -------------------------------
-  // SEND MESSAGE (client-side OpenAI)
-  // -------------------------------
-  async function sendMessage() {
-    if (!input.trim() || !customerId) return;
-
-    const text = input.trim();
-    setInput(""); // Clear input immediately
-
-    const policy = getActivePolicy();
-    if (!policy) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "No policy found for this customer." },
-      ]);
-      return;
+    // -------------------------------------------------
+    // 0. If there's only ONE policy, just use it
+    // -------------------------------------------------
+    if (!selectedPolicyId && !clarification && policies.length === 1) {
+      selectedPolicyId = policies[0].id;
+      console.log("Only one policy, auto-selected:", selectedPolicyId);
     }
 
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
-    setLoading(true);
+    // -------------------------------------------------
+    // 1. POLICY SELECTION USING GPT (only if needed)
+    // -------------------------------------------------
+    if (!selectedPolicyId && !clarification && policies.length > 1) {
+      const choosePrompt = `
+A customer asked: "${message}"
 
-    try {
-      const MAX = 20000;
+Here are the available policies (each includes its TRUE UUID):
 
-      const prompt = `
-You are VINK — an insurance assistant for brokers.
+${policies
+  .map(
+    (p: any, i: number) =>
+      `Policy ${i + 1}:
+UUID="${p.id}"
+File="${p.file_name}"
+Insurer="${p.insurer}"
+Version="${p.wording_version}"`
+  )
+  .join("\n\n")}
 
-You have a single policy schedule in JSON and the user's question.
+RULES:
+- ALWAYS return the exact UUID field shown above.
+- NEVER return the index number (1, 2, etc.).
+- NEVER return "#1", "Policy 1", or anything except the UUID string.
 
-Use ONLY the schedule JSON to answer. If something is not present,
-say exactly: "This information is not present in the schedule."
+Return ONLY one JSON object:
 
-POLICY_SCHEDULE_JSON:
-${JSON.stringify(policy).slice(0, MAX)}
+If clear:
+{ "policyId": "<UUID>", "needs_clarification": false }
 
-USER QUESTION:
-${text}
+If unclear:
+{ "policyId": null, "needs_clarification": true,
+  "clarification_question": "Which policy are you asking about?" }
 `;
 
-      const resp = await openai.responses.create({
+      const chooseResp = await openai.responses.create({
         model: "gpt-5-mini",
-        input: prompt,
-        max_output_tokens: 400,
+        input: choosePrompt,
+        max_output_tokens: 100,
       });
 
-      const answer =
-        resp.output_text || "I'm sorry — I could not generate an answer.";
+      let raw = chooseResp.output_text || "{}";
+      raw = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
 
-      // Remember which policy we used
-      setLastPolicyId(policy.id);
+      let parsed: any = {};
 
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: answer },
-      ]);
-    } catch (err: any) {
-      console.error("CLIENT OPENAI ERROR:", err);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content:
-            "Sorry, there was an error talking to OpenAI on the client side.",
-        },
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  }
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return NextResponse.json({
+          clarification: true,
+          question: "Which policy are you asking about?",
+        });
+      }
 
-  // NOTE: clarification flow is not using GPT policy selection anymore.
-  // You could wire that back up later if you want, but for now we keep it simple.
-
-  // --------------------------------
-  // UI
-  // --------------------------------
-  return (
-    <div className="w-full min-h-screen bg-gray-100 flex justify-center p-6">
-      <div className="w-full max-w-3xl bg-white shadow-lg rounded-xl flex flex-col border border-gray-200">
-        {/* HEADER */}
-        <div className="p-4 border-b border-gray-200 bg-white rounded-t-xl">
-          <h1 className="text-2xl font-semibold text-gray-800">
-            Policy Assistant
-          </h1>
-          <p className="text-gray-500 text-sm">
-            Ask anything about your customer’s policies.
-          </p>
-
-          {/* CUSTOMER DROPDOWN */}
-          <div className="mt-4">
-            <label className="text-sm font-medium text-gray-700">
-              Select customer
-            </label>
-            <select
-              className="mt-2 w-full border rounded-lg px-3 py-2 bg-gray-50"
-              value={customerId || ""}
-              onChange={(e) => setCustomerId(e.target.value)}
-            >
-              <option value="">Choose a customer...</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name || c.id}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* CHAT DISABLED UNTIL CUSTOMER SELECTED */}
-        {!customerId ? (
-          <div className="p-6 text-center text-gray-500">
-            Select a customer to start chatting.
-          </div>
-        ) : (
-          <>
-            {/* CHAT MESSAGES */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50">
-              {messages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`flex ${
-                    msg.role === "user" ? "justify-end" : "justify-start"
-                  }`}
-                >
-                  <div
-                    className={`max-w-[75%] px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed ${
-                      msg.role === "user"
-                        ? "bg-green-600 text-white rounded-br-none"
-                        : "bg-white text-gray-800 border rounded-bl-none"
-                    }`}
-                  >
-                    {msg.content}
-                  </div>
-                </div>
-              ))}
-
-              <div ref={scrollRef} />
-            </div>
-
-            {/* INPUT BOX */}
-            <div className="p-4 border-t border-gray-200 bg-white rounded-b-xl">
-              <div className="flex gap-3">
-                <input
-                  className="flex-1 border border-gray-300 bg-gray-50 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-green-600"
-                  placeholder={"Ask about a policy…"}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !loading) {
-                      e.preventDefault();
-                      sendMessage();
-                    }
-                  }}
-                />
-
-                <button
-                  onClick={sendMessage}
-                  disabled={loading}
-                  className="px-6 bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-lg font-medium shadow-sm transition"
-                >
-                  {loading ? "Thinking…" : "Send"}
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
+      if (parsed.needs_clarifi_
