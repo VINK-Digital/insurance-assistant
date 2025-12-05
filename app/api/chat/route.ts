@@ -194,8 +194,9 @@ RULES:
   model: "gpt-5-mini",
   input: [
     {
-      type: "input_text",
-      text: `
+      type: "message",
+      role: "system",
+      content: `
 You are VINK — an insurance assistant for brokers.
 
 RULES:
@@ -203,26 +204,39 @@ RULES:
 - If missing: say "This information is not present in the schedule or wording."
 - Prefer SCHEDULE for limits/deductibles.
 - Prefer WORDING for definitions.
-- Keep responses to 2 short paragraphs or bullet points.
-USER QUESTION: ${message}
-`
+- Keep responses short.
+      `,
     },
+
     {
-      type: "input_text",
-      text: "SCHEDULE_JSON:\n" +
-        JSON.stringify(scheduleJSON).slice(0, 20000)
+      type: "message",
+      role: "user",
+      content:
+        "SCHEDULE_JSON:\n" +
+        JSON.stringify(scheduleJSON).slice(0, 20000),
     },
+
     {
-      type: "input_text",
-      text: "WORDING_TEXT:\n" +
-        wordingText.slice(0, 20000)
+      type: "message",
+      role: "user",
+      content:
+        "WORDING_TEXT:\n" + wordingText.slice(0, 20000),
     },
+
     {
-      type: "input_text",
-      text: "COMPARISON_JSON:\n" +
-        JSON.stringify(comparisonJSON).slice(0, 20000)
-    }
-  ]
+      type: "message",
+      role: "user",
+      content:
+        "COMPARISON_JSON:\n" +
+        JSON.stringify(comparisonJSON).slice(0, 20000),
+    },
+
+    {
+      type: "message",
+      role: "user",
+      content: `USER QUESTION: ${message}`,
+    },
+  ],
 });
 
 
