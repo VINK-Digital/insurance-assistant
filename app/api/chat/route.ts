@@ -27,28 +27,38 @@ export async function POST(req: NextRequest) {
     let selectedPolicyId = lastPolicyId;
 
     // -------------------------------------------------
-    // 1. POLICY SELECTION USING GPT-5-MINI
+    // 1. GPT POLICY SELECTION — NOW UUID SAFE
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification) {
       const choosePrompt = `
 A customer asked: "${message}"
 
-Here are the available policies:
+Here are the available policies (each includes its TRUE UUID):
 
 ${policies
   .map(
     (p: any, i: number) =>
-      `#${i + 1}: Policy ID=${p.id}, File=${p.file_name}, Insurer=${p.insurer}, Version=${p.wording_version}`
+      `Policy ${i + 1}:
+UUID="${p.id}"
+File="${p.file_name}"
+Insurer="${p.insurer}"
+Version="${p.wording_version}"`
   )
-  .join("\n")}
+  .join("\n\n")}
 
-Return ONLY ONE JSON object.
+RULES:
+- ALWAYS return the exact UUID field shown above.
+- NEVER return the index number (1, 2, etc.).
+- NEVER return "#1", "Policy 1", or anything except the UUID string.
+
+Return ONLY one JSON object:
 
 If clear:
-{ "policyId": "<id>", "needs_clarification": false }
+{ "policyId": "<UUID>", "needs_clarification": false }
 
 If unclear:
-{ "policyId": null, "needs_clarification": true, "clarification_question": "Which policy are you asking about?" }
+{ "policyId": null, "needs_clarification": true,
+  "clarification_question": "Which policy are you asking about?" }
 `;
 
       const chooseResp = await openai.responses.create({
@@ -71,6 +81,7 @@ If unclear:
         });
       }
 
+      // If GPT asks for clarification
       if (parsed.needs_clarification) {
         return NextResponse.json({
           clarification: true,
@@ -82,7 +93,7 @@ If unclear:
     }
 
     // -------------------------------------------------
-    // 2. LOAD POLICY + WORDING
+    // 2. LOAD POLICY + WORDING FROM SUPABASE
     // -------------------------------------------------
     const { data: policy } = await supabase
       .from("policies")
@@ -129,9 +140,9 @@ If unclear:
     }
 
     // -------------------------------------------------
-    // 3. BUILD ONE BIG STRING PROMPT (SDK v6 REQUIRED FORMAT)
+    // 3. BUILD GPT ANSWER PROMPT
     // -------------------------------------------------
-    const MAX = 20000; // keep input under safe limit
+    const MAX = 20000;
 
     const finalPrompt = `
 You are VINK — an insurance assistant for brokers.
@@ -162,26 +173,21 @@ ${JSON.stringify(comparisonJSON).slice(0, MAX)}
 USER QUESTION:
 ${message}
 
----
-
-Provide the best possible answer using the information above.
+Answer using only the above information.
 `;
 
     // -------------------------------------------------
-    // 4. ASK GPT-5-MINI 
+    // 4. GPT ANSWER
     // -------------------------------------------------
     const resp = await openai.responses.create({
-      model: "gpt-5-mini",       
-      input: finalPrompt,        
+      model: "gpt-5-mini",
+      input: finalPrompt,
       max_output_tokens: 400,
     });
 
     const answer =
       resp.output_text || "I'm sorry — I could not generate an answer.";
 
-    // -------------------------------------------------
-    // 5. RETURN ANSWER TO FRONTEND
-    // -------------------------------------------------
     return NextResponse.json({
       success: true,
       answer,
