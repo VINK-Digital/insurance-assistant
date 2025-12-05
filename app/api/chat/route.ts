@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
-// USE PUBLIC KEY ENV HERE
+// Use PUBLIC KEY (pk-...)
 const openai = new OpenAI({
   apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY!,
 });
@@ -17,36 +17,30 @@ const supabase = createClient(
 
 export async function POST(req: NextRequest) {
   try {
-    const {
-      message,
-      customerId,
-      policies = [],
-      lastPolicyId,
-      clarification,
-    } = await req.json();
+    const { message, policies = [], lastPolicyId, clarification } =
+      await req.json();
 
     let selectedPolicyId: string | null = lastPolicyId || null;
 
     // -------------------------------------------------
-    // 0. If there's only ONE policy, just use it
+    // AUTO-SELECT IF ONLY ONE POLICY
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification && policies.length === 1) {
       selectedPolicyId = policies[0].id;
-      console.log("Only one policy, auto-selected:", selectedPolicyId);
     }
 
     // -------------------------------------------------
-    // 1. POLICY SELECTION USING GPT (only if needed)
+    // GPT POLICY PICKER (only if multiple policies)
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification && policies.length > 1) {
       const choosePrompt = `
 A customer asked: "${message}"
 
-Here are the available policies (each includes its TRUE UUID):
+Available policies with REAL UUIDs:
 
 ${policies
   .map(
-    (p: any, i: number) =>
+    (p, i) =>
       `Policy ${i + 1}:
 UUID="${p.id}"
 File="${p.file_name}"
@@ -55,12 +49,7 @@ Version="${p.wording_version}"`
   )
   .join("\n\n")}
 
-RULES:
-- ALWAYS return the exact UUID field shown above.
-- NEVER return the index number (1, 2, etc.).
-- NEVER return "#1", "Policy 1", or anything except the UUID string.
-
-Return ONLY one JSON object:
+Return ONLY JSON:
 
 If clear:
 { "policyId": "<UUID>", "needs_clarification": false }
@@ -79,7 +68,7 @@ If unclear:
       let raw = chooseResp.output_text || "{}";
       raw = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
 
-      let parsed: any = {};
+      let parsed;
 
       try {
         parsed = JSON.parse(raw);
@@ -90,4 +79,117 @@ If unclear:
         });
       }
 
-      if (parsed.needs_clarifi_
+      if (parsed.needs_clarification) {
+        return NextResponse.json({
+          clarification: true,
+          question: parsed.clarification_question,
+        });
+      }
+
+      selectedPolicyId = parsed.policyId;
+    }
+
+    if (!selectedPolicyId) {
+      return NextResponse.json(
+        { error: "No policy selected" },
+        { status: 400 }
+      );
+    }
+
+    // -------------------------------------------------
+    // LOAD POLICY AND WORDING FROM SUPABASE
+    // -------------------------------------------------
+    const { data: policy } = await supabase
+      .from("policies")
+      .select("ocr_text, wording_id")
+      .eq("id", selectedPolicyId)
+      .single();
+
+    if (!policy) {
+      return NextResponse.json(
+        { error: "Policy not found" },
+        { status: 404 }
+      );
+    }
+
+    let scheduleJSON;
+
+    try {
+      scheduleJSON = JSON.parse(policy.ocr_text);
+    } catch {
+      scheduleJSON = { text: policy.ocr_text };
+    }
+
+    let wordingText = "";
+    let comparisonJSON = null;
+
+    if (policy.wording_id) {
+      const { data: wording } = await supabase
+        .from("policy_wording")
+        .select("wording_text")
+        .eq("id", policy.wording_id)
+        .single();
+
+      wordingText = wording?.wording_text || "";
+
+      const { data: comp } = await supabase
+        .from("analysis")
+        .select("result_json")
+        .eq("policy_id", selectedPolicyId)
+        .order("id", { ascending: false })
+        .limit(1)
+        .single();
+
+      comparisonJSON = comp?.result_json || null;
+    }
+
+    // -------------------------------------------------
+    // GPT ANSWER PROMPT
+    // -------------------------------------------------
+    const MAX = 20000;
+
+    const finalPrompt = `
+You are VINK — an insurance assistant.
+
+Use ONLY the schedule JSON, wording text and comparison JSON.
+
+If missing:
+"This information is not present in the schedule or wording."
+
+SCHEDULE_JSON:
+${JSON.stringify(scheduleJSON).slice(0, MAX)}
+
+WORDING_TEXT:
+${wordingText.slice(0, MAX)}
+
+COMPARISON_JSON:
+${JSON.stringify(comparisonJSON).slice(0, MAX)}
+
+USER QUESTION:
+${message}
+
+Answer concisely.
+`;
+
+    const resp = await openai.responses.create({
+      model: "gpt-5-mini",
+      input: finalPrompt,
+      max_output_tokens: 400,
+    });
+
+    const answer =
+      resp.output_text || "I'm sorry — I could not generate an answer.";
+
+    return NextResponse.json({
+      success: true,
+      answer,
+      selectedPolicyId,
+    });
+  } catch (err: any) {
+    console.error("CHAT ERROR:", err);
+    return NextResponse.json(
+      { error: "Chat error", details: err.message },
+      { status: 500 }
+    );
+  }
+}
