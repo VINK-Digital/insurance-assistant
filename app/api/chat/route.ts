@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     let selectedPolicyId = lastPolicyId;
 
     // -------------------------------------------------
-    // 1. POLICY SELECTION USING GPT
+    // 1. POLICY SELECTION USING GPT-5.1-mini
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification) {
       const choosePrompt = `
@@ -38,8 +38,7 @@ ${policies
   )
   .join("\n")}
 
-TASK:
-Return ONLY JSON:
+Return ONLY one JSON object.
 
 If clear:
 {
@@ -48,7 +47,7 @@ If clear:
   "clarification_question": null
 }
 
-If not clear:
+If ambiguous:
 {
   "policyId": null,
   "needs_clarification": true,
@@ -56,13 +55,18 @@ If not clear:
 }
 `;
 
-      const ai = await openai.chat.completions.create({
+      const chooseResp = await openai.responses.create({
         model: "gpt-5.1-mini",
-        temperature: 0,
-        messages: [{ role: "user", content: choosePrompt }],
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: choosePrompt,
+          },
+        ],
       });
 
-      let raw = ai.choices[0].message?.content ?? "{}";
+      let raw = chooseResp.output_text || "{}";
       raw = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
 
       let parsed: any = {};
@@ -86,7 +90,7 @@ If not clear:
     }
 
     // -------------------------------------------------
-    // 2. LOAD POLICY SCHEDULE
+    // 2. LOAD POLICY DATA
     // -------------------------------------------------
     const { data: policy } = await supabase
       .from("policies")
@@ -95,10 +99,7 @@ If not clear:
       .single();
 
     if (!policy) {
-      return NextResponse.json(
-        { error: "Policy not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Policy not found" }, { status: 404 });
     }
 
     let scheduleJSON: any = {};
@@ -109,7 +110,7 @@ If not clear:
     }
 
     // -------------------------------------------------
-    // 3. LOAD WORDING + COMPARISON JSON
+    // 3. LOAD WORDING + COMPARISON
     // -------------------------------------------------
     let wordingText = "";
     let comparisonJSON = null;
@@ -121,7 +122,7 @@ If not clear:
         .eq("id", policy.wording_id)
         .single();
 
-      wordingText = wording?.wording_text ?? "";
+      wordingText = wording?.wording_text || "";
 
       const { data: comp } = await supabase
         .from("analysis")
@@ -131,48 +132,64 @@ If not clear:
         .limit(1)
         .single();
 
-      comparisonJSON = comp?.result_json ?? null;
+      comparisonJSON = comp?.result_json || null;
     }
 
     // -------------------------------------------------
-    // 4. BUILD FINAL PROMPT FOR GPT-5.1-mini
+    // 4. BUILD GPT-5.1-mini INPUT BLOCKS
     // -------------------------------------------------
     const MAX = 20000;
 
-    const finalPrompt = `
+    const inputBlocks = [
+      {
+        type: "message",
+        role: "system",
+        content: `
 You are VINK — an insurance assistant for brokers.
-
-RULES:
-- Use ONLY the following: SCHEDULE_JSON, WORDING_TEXT, COMPARISON_JSON.
-- If missing, say: "This information is not present in the schedule or wording."
-- Prefer SCHEDULE for limits/deductibles.
-- Prefer WORDING for definitions.
-- Keep answers short and factual.
-
-SCHEDULE_JSON:
-${JSON.stringify(scheduleJSON).slice(0, MAX)}
-
-WORDING_TEXT:
-${wordingText.slice(0, MAX)}
-
-COMPARISON_JSON:
-${JSON.stringify(comparisonJSON).slice(0, MAX)}
-
-USER QUESTION:
-"${message}"
-`;
+Use ONLY the provided Schedule JSON, Wording Text, and Comparison JSON.
+If information is missing, say exactly:
+"This information is not present in the schedule or wording."
+Keep answers short and factual.
+        `,
+      },
+      {
+        type: "message",
+        role: "user",
+        content:
+          "SCHEDULE_JSON:\n" +
+          JSON.stringify(scheduleJSON).slice(0, MAX),
+      },
+      {
+        type: "message",
+        role: "user",
+        content:
+          "WORDING_TEXT:\n" + wordingText.slice(0, MAX),
+      },
+      {
+        type: "message",
+        role: "user",
+        content:
+          "COMPARISON_JSON:\n" +
+          JSON.stringify(comparisonJSON).slice(0, MAX),
+      },
+      {
+        type: "message",
+        role: "user",
+        content: `USER QUESTION: ${message}`,
+      },
+    ];
 
     // -------------------------------------------------
     // 5. ASK GPT-5.1-mini
     // -------------------------------------------------
-    const answerRes = await openai.chat.completions.create({
+    const resp = await openai.responses.create({
       model: "gpt-5.1-mini",
-      temperature: 0,
-      messages: [{ role: "user", content: finalPrompt }],
+      input: inputBlocks,
+      max_output_tokens: 400,
     });
 
     const answer =
-      answerRes.choices[0].message?.content ??
+      resp.output_text ||
       "I'm sorry — I could not generate an answer.";
 
     return NextResponse.json({
