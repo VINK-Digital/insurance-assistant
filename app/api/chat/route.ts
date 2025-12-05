@@ -1,3 +1,5 @@
+export const runtime = "nodejs";
+
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
@@ -24,8 +26,7 @@ export async function POST(req: NextRequest) {
     let selectedPolicyId = lastPolicyId;
 
     // -------------------------------------------------
-    // 1. If no policy selected and this is not a clarification,
-    // ask GPT to pick one
+    // 1. CHOOSE POLICY IF NOT SELECTED
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification) {
       const choosePrompt = `
@@ -43,9 +44,9 @@ ${policies
   .join("\n")}
 
 TASK:
-Return JSON strictly in this format:
+Return strict JSON ONLY:
 
-If the question clearly refers to one policy:
+If clear:
 {
   "policyId": "<id>",
   "needs_clarification": false,
@@ -62,12 +63,26 @@ If ambiguous:
 
       const chooseResponse = await openai.responses.create({
         model: "gpt-5-mini",
-        input: choosePrompt,
+        input: [{ role: "user", content: [{ type: "input_text", text: choosePrompt }] }],
       });
 
       let raw = chooseResponse.output_text ?? "{}";
-      raw = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-      const parsed = JSON.parse(raw);
+
+      // clean markdown
+      raw = raw.replace(/```json/gi, "").replace(/```/g, "");
+
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return NextResponse.json(
+          {
+            clarification: true,
+            question: "Which policy are you asking about?",
+          },
+          { status: 200 }
+        );
+      }
 
       if (parsed.needs_clarification) {
         return NextResponse.json({
@@ -80,7 +95,7 @@ If ambiguous:
     }
 
     // -------------------------------------------------
-    // 2. Load policy schedule from Supabase
+    // 2. LOAD POLICY DATA
     // -------------------------------------------------
     const { data: policy } = await supabase
       .from("policies")
@@ -89,13 +104,10 @@ If ambiguous:
       .single();
 
     if (!policy) {
-      return NextResponse.json(
-        { error: "Policy not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Policy not found" }, { status: 404 });
     }
 
-    let scheduleJSON: any = null;
+    let scheduleJSON: any = {};
     try {
       scheduleJSON = JSON.parse(policy.ocr_text);
     } catch {
@@ -103,10 +115,10 @@ If ambiguous:
     }
 
     // -------------------------------------------------
-    // 3. Load wording text + comparison JSON (if exists)
+    // 3. LOAD WORDING + COMPARISON
     // -------------------------------------------------
     let wordingText = "";
-    let comparisonJSON = null;
+    let comparisonJSON: any = null;
 
     if (policy.wording_id) {
       const { data: wording } = await supabase
@@ -115,9 +127,7 @@ If ambiguous:
         .eq("id", policy.wording_id)
         .single();
 
-      if (wording?.wording_text) {
-        wordingText = wording.wording_text;
-      }
+      wordingText = wording?.wording_text ?? "";
 
       const { data: comp } = await supabase
         .from("analysis")
@@ -127,65 +137,70 @@ If ambiguous:
         .limit(1)
         .single();
 
-      if (comp?.result_json) {
-        comparisonJSON = comp.result_json;
-      }
+      comparisonJSON = comp?.result_json ?? null;
     }
 
     // -------------------------------------------------
-    // 4. Build grounded answer prompt
+    // 4. BUILD GPT INPUT (STRUCTURED, SAFE)
     // -------------------------------------------------
-    const answerPrompt = `
-You are an insurance assistant for brokers.
+    const MAX_CHARS = 20000; // prevent model overflow
 
-DATA YOU MAY USE:
-- POLICY SCHEDULE JSON (tables, limits, deductibles)
-- POLICY WORDING TEXT (full legal wording)
-- COMPARISON JSON (schedule vs wording differences)
+    const inputBlocks = [
+      {
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text: `
+You are VINK — an insurance assistant for brokers.
 
 RULES:
-- Answer ONLY using this data.
-- If something is NOT in the data, say:
-  "This information is not present in the schedule or wording."
-- DO NOT guess.
-- DO NOT hallucinate.
-- Prefer the wording for definitions.
-- Prefer the schedule for limits/deductibles/sections.
+- Only answer using the provided Schedule, Wording Text, and Comparison JSON.
+- If missing: say "This information is not present in the schedule or wording."
+- Prefer SCHEDULE for limits/deductibles.
+- Prefer WORDING for definitions.
+- Keep responses to 2 short paragraphs or bullet points.
+        `,
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "SCHEDULE_JSON:" },
+          {
+            type: "input_text",
+            text: JSON.stringify(scheduleJSON).slice(0, MAX_CHARS),
+          },
 
-STYLE:
-- Be concise.
-- Max 2 short paragraphs or bullet points.
-- If user asks “what does clause 2.2(b) mean?”
-   → Give a simple 3–5 sentence plain-English summary.
-- Mention limits & deductibles when relevant.
+          { type: "input_text", text: "WORDING_TEXT:" },
+          { type: "input_text", text: wordingText.slice(0, MAX_CHARS) },
 
-SCHEDULE_JSON:
-${JSON.stringify(scheduleJSON, null, 2)}
+          { type: "input_text", text: "COMPARISON_JSON:" },
+          {
+            type: "input_text",
+            text: JSON.stringify(comparisonJSON).slice(0, MAX_CHARS),
+          },
 
-WORDING_TEXT:
-${wordingText.slice(0, 20000)}
-
-COMPARISON_JSON:
-${JSON.stringify(comparisonJSON, null, 2)}
-
-USER QUESTION:
-"${message}"
-`;
+          { type: "input_text", text: `USER QUESTION: ${message}` },
+        ],
+      },
+    ];
 
     // -------------------------------------------------
-    // 5. Generate grounded answer
+    // 5. ASK GPT
     // -------------------------------------------------
     const aiResponse = await openai.responses.create({
       model: "gpt-5-mini",
-      input: answerPrompt,
+      input: inputBlocks,
     });
 
     const answer =
       aiResponse.output_text ??
-      "I'm sorry — I could not generate an answer.";
+      "I’m sorry — I could not generate an answer.";
 
     // -------------------------------------------------
-    // 6. Return answer to frontend
+    // 6. RETURN ANSWER
     // -------------------------------------------------
     return NextResponse.json({
       success: true,
