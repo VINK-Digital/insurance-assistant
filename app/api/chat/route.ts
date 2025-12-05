@@ -4,9 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -15,18 +13,13 @@ const supabase = createClient(
 
 export async function POST(req: NextRequest) {
   try {
-    const {
-      message,
-      customerId,
-      policies = [],
-      lastPolicyId,
-      clarification,
-    } = await req.json();
+    const { message, customerId, policies = [], lastPolicyId, clarification } =
+      await req.json();
 
     let selectedPolicyId = lastPolicyId;
 
     // -------------------------------------------------
-    // 1. CHOOSE POLICY IF NOT SELECTED
+    // 1. POLICY SELECTION LOGIC (uses GPT-5.1-mini)
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification) {
       const choosePrompt = `
@@ -44,7 +37,7 @@ ${policies
   .join("\n")}
 
 TASK:
-Return strict JSON ONLY:
+Return ONLY ONE JSON object.
 
 If clear:
 {
@@ -61,27 +54,29 @@ If ambiguous:
 }
 `;
 
-      const chooseResponse = await openai.responses.create({
-        model: "gpt-5-mini",
-        input: [{ role: "user", content: [{ type: "input_text", text: choosePrompt }] }],
+      const resp = await openai.responses.create({
+        model: "gpt-5.1-mini",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: choosePrompt,
+          },
+        ],
       });
 
-      let raw = chooseResponse.output_text ?? "{}";
-
-      // clean markdown
-      raw = raw.replace(/```json/gi, "").replace(/```/g, "");
+      let raw = resp.output_text ?? "{}";
+      raw = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
 
       let parsed: any = {};
+
       try {
         parsed = JSON.parse(raw);
       } catch {
-        return NextResponse.json(
-          {
-            clarification: true,
-            question: "Which policy are you asking about?",
-          },
-          { status: 200 }
-        );
+        return NextResponse.json({
+          clarification: true,
+          question: "Which policy are you asking about?",
+        });
       }
 
       if (parsed.needs_clarification) {
@@ -118,7 +113,7 @@ If ambiguous:
     // 3. LOAD WORDING + COMPARISON
     // -------------------------------------------------
     let wordingText = "";
-    let comparisonJSON: any = null;
+    let comparisonJSON = null;
 
     if (policy.wording_id) {
       const { data: wording } = await supabase
@@ -141,111 +136,69 @@ If ambiguous:
     }
 
     // -------------------------------------------------
-    // 4. BUILD GPT INPUT (STRUCTURED, SAFE)
+    // 4. GPT-5.1-mini ANALYSIS PROMPT
     // -------------------------------------------------
-    const MAX_CHARS = 20000; // prevent model overflow
+    const MAX = 20000;
 
     const inputBlocks = [
+      // System
       {
+        type: "message",
         role: "system",
-        content: [
-          {
-            type: "input_text",
-            text: `
+        content: `
 You are VINK — an insurance assistant for brokers.
-
-RULES:
-- Only answer using the provided Schedule, Wording Text, and Comparison JSON.
-- If missing: say "This information is not present in the schedule or wording."
-- Prefer SCHEDULE for limits/deductibles.
-- Prefer WORDING for definitions.
-- Keep responses to 2 short paragraphs or bullet points.
-        `,
-          },
-        ],
+Use ONLY the provided Schedule JSON, Wording Text, and Comparison JSON.
+If information is missing, say:
+"This information is not present in the schedule or wording."
+Keep responses short and factual.
+`,
       },
+
+      // Schedule
       {
+        type: "message",
         role: "user",
-        content: [
-          { type: "input_text", text: "SCHEDULE_JSON:" },
-          {
-            type: "input_text",
-            text: JSON.stringify(scheduleJSON).slice(0, MAX_CHARS),
-          },
+        content: "SCHEDULE_JSON:\n" + JSON.stringify(scheduleJSON).slice(0, MAX),
+      },
 
-          { type: "input_text", text: "WORDING_TEXT:" },
-          { type: "input_text", text: wordingText.slice(0, MAX_CHARS) },
+      // Wording
+      {
+        type: "message",
+        role: "user",
+        content: "WORDING_TEXT:\n" + wordingText.slice(0, MAX),
+      },
 
-          { type: "input_text", text: "COMPARISON_JSON:" },
-          {
-            type: "input_text",
-            text: JSON.stringify(comparisonJSON).slice(0, MAX_CHARS),
-          },
+      // Comparison
+      {
+        type: "message",
+        role: "user",
+        content:
+          "COMPARISON_JSON:\n" +
+          JSON.stringify(comparisonJSON).slice(0, MAX),
+      },
 
-          { type: "input_text", text: `USER QUESTION: ${message}` },
-        ],
+      // User question
+      {
+        type: "message",
+        role: "user",
+        content: `USER QUESTION: ${message}`,
       },
     ];
 
     // -------------------------------------------------
-    // 5. ASK GPT
+    // 5. CALL GPT-5.1-mini
     // -------------------------------------------------
-   const aiResponse = await openai.responses.create({
-  model: "gpt-5-mini",
-  input: [
-    {
-      type: "message",
-      role: "system",
-      content: `
-You are VINK — an insurance assistant for brokers.
-
-RULES:
-- Only answer using the provided Schedule, Wording Text, and Comparison JSON.
-- If missing: say "This information is not present in the schedule or wording."
-- Prefer SCHEDULE for limits/deductibles.
-- Prefer WORDING for definitions.
-- Keep responses short.
-      `,
-    },
-
-    {
-      type: "message",
-      role: "user",
-      content:
-        "SCHEDULE_JSON:\n" +
-        JSON.stringify(scheduleJSON).slice(0, 20000),
-    },
-
-    {
-      type: "message",
-      role: "user",
-      content:
-        "WORDING_TEXT:\n" + wordingText.slice(0, 20000),
-    },
-
-    {
-      type: "message",
-      role: "user",
-      content:
-        "COMPARISON_JSON:\n" +
-        JSON.stringify(comparisonJSON).slice(0, 20000),
-    },
-
-    {
-      type: "message",
-      role: "user",
-      content: `USER QUESTION: ${message}`,
-    },
-  ],
-});
-
+    const ai = await openai.responses.create({
+      model: "gpt-5.1-mini",
+      input: inputBlocks,
+      max_output_tokens: 300,
+    });
 
     const answer =
-      aiResponse.output_text ??
-      "I’m sorry — I could not generate an answer.";
+      ai.output_text ?? "I'm sorry — I could not generate an answer.";
 
     // -------------------------------------------------
-    // 6. RETURN ANSWER
+    // 6. SEND BACK TO UI
     // -------------------------------------------------
     return NextResponse.json({
       success: true,
