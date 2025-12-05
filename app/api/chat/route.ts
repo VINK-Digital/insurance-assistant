@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     let selectedPolicyId = lastPolicyId;
 
     // -------------------------------------------------
-    // 1. POLICY SELECTION USING GPT-5.1-mini
+    // 1. POLICY SELECTION (GPT-5.1-mini)
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification) {
       const choosePrompt = `
@@ -32,38 +32,22 @@ Here are the available policies:
 ${policies
   .map(
     (p: any, i: number) =>
-      `#${i + 1}: Policy ID: ${p.id}, File: ${p.file_name}, Insurer: ${
-        p.insurer
-      }, Wording Version: ${p.wording_version}`
+      `#${i + 1}: Policy ID: ${p.id}, File: ${p.file_name}, Insurer: ${p.insurer}, Wording Version: ${p.wording_version}`
   )
   .join("\n")}
 
-Return ONLY one JSON object.
+Return ONLY ONE JSON object.
 
 If clear:
-{
-  "policyId": "<id>",
-  "needs_clarification": false,
-  "clarification_question": null
-}
+{ "policyId": "<id>", "needs_clarification": false }
 
-If ambiguous:
-{
-  "policyId": null,
-  "needs_clarification": true,
-  "clarification_question": "Which policy are you asking about?"
-}
+If unclear:
+{ "policyId": null, "needs_clarification": true, "clarification_question": "Which policy are you asking about?" }
 `;
 
       const chooseResp = await openai.responses.create({
         model: "gpt-5.1-mini",
-        input: [
-          {
-            type: "message",
-            role: "user",
-            content: choosePrompt,
-          },
-        ],
+        input: choosePrompt,
       });
 
       let raw = chooseResp.output_text || "{}";
@@ -90,7 +74,7 @@ If ambiguous:
     }
 
     // -------------------------------------------------
-    // 2. LOAD POLICY DATA
+    // 2. LOAD POLICY + WORDING
     // -------------------------------------------------
     const { data: policy } = await supabase
       .from("policies")
@@ -109,9 +93,6 @@ If ambiguous:
       scheduleJSON = { text: policy.ocr_text };
     }
 
-    // -------------------------------------------------
-    // 3. LOAD WORDING + COMPARISON
-    // -------------------------------------------------
     let wordingText = "";
     let comparisonJSON = null;
 
@@ -136,61 +117,47 @@ If ambiguous:
     }
 
     // -------------------------------------------------
-    // 4. BUILD GPT-5.1-mini INPUT BLOCKS
+    // 3. BUILD INPUT FOR GPT-5.1-mini
     // -------------------------------------------------
     const MAX = 20000;
 
-    const inputBlocks = [
-      {
-        type: "message",
-        role: "system",
-        content: `
+    const blocks = [
+      `
 You are VINK — an insurance assistant for brokers.
-Use ONLY the provided Schedule JSON, Wording Text, and Comparison JSON.
-If information is missing, say exactly:
+Use ONLY the data provided.
+If something is missing, say:
 "This information is not present in the schedule or wording."
 Keep answers short and factual.
-        `,
-      },
-      {
-        type: "message",
-        role: "user",
-        content:
-          "SCHEDULE_JSON:\n" +
-          JSON.stringify(scheduleJSON).slice(0, MAX),
-      },
-      {
-        type: "message",
-        role: "user",
-        content:
-          "WORDING_TEXT:\n" + wordingText.slice(0, MAX),
-      },
-      {
-        type: "message",
-        role: "user",
-        content:
-          "COMPARISON_JSON:\n" +
-          JSON.stringify(comparisonJSON).slice(0, MAX),
-      },
-      {
-        type: "message",
-        role: "user",
-        content: `USER QUESTION: ${message}`,
-      },
+      `,
+      `
+SCHEDULE_JSON:
+${JSON.stringify(scheduleJSON).slice(0, MAX)}
+      `,
+      `
+WORDING_TEXT:
+${wordingText.slice(0, MAX)}
+      `,
+      `
+COMPARISON_JSON:
+${JSON.stringify(comparisonJSON).slice(0, MAX)}
+      `,
+      `
+USER QUESTION:
+${message}
+      `,
     ];
 
     // -------------------------------------------------
-    // 5. ASK GPT-5.1-mini
+    // 4. ASK GPT-5.1-mini
     // -------------------------------------------------
     const resp = await openai.responses.create({
       model: "gpt-5.1-mini",
-      input: inputBlocks,
+      input: blocks, // <-- THIS IS VALID FOR SDK v6
       max_output_tokens: 400,
     });
 
     const answer =
-      resp.output_text ||
-      "I'm sorry — I could not generate an answer.";
+      resp.output_text || "I'm sorry — I could not generate an answer.";
 
     return NextResponse.json({
       success: true,
@@ -198,6 +165,7 @@ Keep answers short and factual.
       selectedPolicyId,
     });
   } catch (err: any) {
+    console.error("CHAT ERROR:", err);
     return NextResponse.json(
       { error: "Chat error", details: err.message },
       { status: 500 }
