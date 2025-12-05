@@ -1,3 +1,4 @@
+console.log("ENV KEY STARTS WITH:", process.env.OPENAI_API_KEY?.slice(0, 8));
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
