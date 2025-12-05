@@ -39,14 +39,13 @@ A customer asked: "${message}"
 Available policies with REAL UUIDs:
 
 ${policies
-  .map(
-    (p, i) =>
-      `Policy ${i + 1}:
+  .map((p: any, i: number) => {
+    return `Policy ${i + 1}:
 UUID="${p.id}"
 File="${p.file_name}"
 Insurer="${p.insurer}"
-Version="${p.wording_version}"`
-  )
+Version="${p.wording_version}"`;
+  })
   .join("\n\n")}
 
 Return ONLY JSON:
