@@ -1,6 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY!,
+  dangerouslyAllowBrowser: true,
+});
 
 export default function ChatPage() {
   const [customers, setCustomers] = useState<any[]>([]);
@@ -12,6 +18,7 @@ export default function ChatPage() {
   const [lastPolicyId, setLastPolicyId] = useState<string | null>(null);
   const [clarification, setClarification] = useState<string | null>(null);
 
+  const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto scroll to bottom when messages change
@@ -39,8 +46,19 @@ export default function ChatPage() {
       });
   }, [customerId]);
 
+  // Helper: pick a policy (for now: first one)
+  function getActivePolicy() {
+    if (policies.length === 0) return null;
+    if (lastPolicyId) {
+      const found = policies.find((p) => p.id === lastPolicyId);
+      if (found) return found;
+    }
+    // Fallback: first policy
+    return policies[0];
+  }
+
   // -------------------------------
-  // SEND MESSAGE
+  // SEND MESSAGE (client-side OpenAI)
   // -------------------------------
   async function sendMessage() {
     if (!input.trim() || !customerId) return;
@@ -48,79 +66,69 @@ export default function ChatPage() {
     const text = input.trim();
     setInput(""); // Clear input immediately
 
-    // Add user message
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
-
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: text,
-        customerId,
-        policies,
-        lastPolicyId,
-      }),
-    });
-
-    const data = await res.json();
-
-    if (data.clarification) {
-      setClarification(data.question);
+    const policy = getActivePolicy();
+    if (!policy) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: data.question },
+        { role: "assistant", content: "No policy found for this customer." },
       ]);
       return;
     }
 
-    if (data.selectedPolicyId) {
-      setLastPolicyId(data.selectedPolicyId);
-    }
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    setLoading(true);
 
-    setMessages((prev) => [
-      ...prev,
-      { role: "assistant", content: data.answer },
-    ]);
+    try {
+      const MAX = 20000;
+
+      const prompt = `
+You are VINK — an insurance assistant for brokers.
+
+You have a single policy schedule in JSON and the user's question.
+
+Use ONLY the schedule JSON to answer. If something is not present,
+say exactly: "This information is not present in the schedule."
+
+POLICY_SCHEDULE_JSON:
+${JSON.stringify(policy).slice(0, MAX)}
+
+USER QUESTION:
+${text}
+`;
+
+      const resp = await openai.responses.create({
+        model: "gpt-5-mini",
+        input: prompt,
+        max_output_tokens: 400,
+      });
+
+      const answer =
+        resp.output_text || "I'm sorry — I could not generate an answer.";
+
+      // Remember which policy we used
+      setLastPolicyId(policy.id);
+
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: answer },
+      ]);
+    } catch (err: any) {
+      console.error("CLIENT OPENAI ERROR:", err);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content:
+            "Sorry, there was an error talking to OpenAI on the client side.",
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
   }
 
-  // -------------------------------
-  // HANDLE CLARIFICATION ANSWER
-  // -------------------------------
-  async function handleClarification() {
-    if (!input.trim()) return;
-
-    const answer = input.trim();
-    setInput("");
-    setClarification(null);
-
-    setMessages((prev) => [
-      ...prev,
-      { role: "user", content: answer }
-    ]);
-
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: answer,
-        customerId,
-        policies,
-        lastPolicyId,
-        clarification: true,
-      }),
-    });
-
-    const data = await res.json();
-
-    if (data.selectedPolicyId) {
-      setLastPolicyId(data.selectedPolicyId);
-    }
-
-    setMessages((prev) => [
-      ...prev,
-      { role: "assistant", content: data.answer },
-    ]);
-  }
+  // NOTE: clarification flow is not using GPT policy selection anymore.
+  // You could wire that back up later if you want, but for now we keep it simple.
 
   // --------------------------------
   // UI
@@ -128,7 +136,6 @@ export default function ChatPage() {
   return (
     <div className="w-full min-h-screen bg-gray-100 flex justify-center p-6">
       <div className="w-full max-w-3xl bg-white shadow-lg rounded-xl flex flex-col border border-gray-200">
-        
         {/* HEADER */}
         <div className="p-4 border-b border-gray-200 bg-white rounded-t-xl">
           <h1 className="text-2xl font-semibold text-gray-800">
@@ -140,7 +147,9 @@ export default function ChatPage() {
 
           {/* CUSTOMER DROPDOWN */}
           <div className="mt-4">
-            <label className="text-sm font-medium text-gray-700">Select customer</label>
+            <label className="text-sm font-medium text-gray-700">
+              Select customer
+            </label>
             <select
               className="mt-2 w-full border rounded-lg px-3 py-2 bg-gray-50"
               value={customerId || ""}
@@ -168,7 +177,9 @@ export default function ChatPage() {
               {messages.map((msg, i) => (
                 <div
                   key={i}
-                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                  className={`flex ${
+                    msg.role === "user" ? "justify-end" : "justify-start"
+                  }`}
                 >
                   <div
                     className={`max-w-[75%] px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed ${
@@ -190,28 +201,28 @@ export default function ChatPage() {
               <div className="flex gap-3">
                 <input
                   className="flex-1 border border-gray-300 bg-gray-50 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-green-600"
-                  placeholder={clarification ? "Please clarify…" : "Ask about a policy…"}
+                  placeholder={"Ask about a policy…"}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (e.key === "Enter" && !e.shiftKey && !loading) {
                       e.preventDefault();
-                      clarification ? handleClarification() : sendMessage();
+                      sendMessage();
                     }
                   }}
                 />
 
                 <button
-                  onClick={clarification ? handleClarification : sendMessage}
-                  className="px-6 bg-green-700 hover:bg-green-800 text-white rounded-lg font-medium shadow-sm transition"
+                  onClick={sendMessage}
+                  disabled={loading}
+                  className="px-6 bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-lg font-medium shadow-sm transition"
                 >
-                  {clarification ? "Clarify" : "Send"}
+                  {loading ? "Thinking…" : "Send"}
                 </button>
               </div>
             </div>
           </>
         )}
-        
       </div>
     </div>
   );
