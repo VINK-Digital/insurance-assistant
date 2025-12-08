@@ -144,15 +144,24 @@ If unclear:
     // -------------------------------------------------
     // GPT ANSWER PROMPT
     // -------------------------------------------------
-    const MAX = 20000;
+    
+const MAX = 20000;
 
-    const finalPrompt = `
-You are VINK — an insurance assistant.
+const finalPrompt = `
+You are VINK — an expert insurance assistant.
 
-Use ONLY the schedule JSON, wording text and comparison JSON.
+You have three data sources:
 
-If missing:
-"This information is not present in the schedule or wording."
+1. POLICY SCHEDULE JSON  
+2. POLICY WORDING TEXT (legal clauses, definitions)  
+3. COMPARISON JSON (differences)
+
+RULES:
+- Use the wording text for clauses (e.g., "Clause 2.2").
+- Use the schedule for limits, deductibles, sub-limits.
+- If something is missing from BOTH schedule & wording, say:
+  "This information is not present in the schedule or wording."
+- Be concise, use 3–5 sentences max unless clarification is needed.
 
 SCHEDULE_JSON:
 ${JSON.stringify(scheduleJSON).slice(0, MAX)}
@@ -164,15 +173,15 @@ COMPARISON_JSON:
 ${JSON.stringify(comparisonJSON).slice(0, MAX)}
 
 USER QUESTION:
-${message}
+"${message}"
 
-Answer concisely.
+Provide the best possible grounded answer.
 `;
 
     const resp = await openai.responses.create({
       model: "gpt-5-mini",
       input: finalPrompt,
-      max_output_tokens: 400,
+      max_output_tokens: 1000,
     });
 
     const answer =
