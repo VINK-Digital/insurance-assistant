@@ -21,34 +21,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1) Load policy + wording
-    const { data: policy } = await supabase
+    // ------------------------------
+    // 1) LOAD POLICY + WORDING
+    // ------------------------------
+    const { data: policy, error: policyErr } = await supabase
       .from("policies")
       .select("ocr_text, wording_id, file_name, insurer, wording_version")
       .eq("id", policyId)
       .single();
 
-    if (!policy?.ocr_text) {
+    if (policyErr || !policy?.ocr_text) {
       return NextResponse.json(
         { error: "Policy has no extracted text" },
         { status: 400 }
       );
     }
 
-    if (!policy?.wording_id) {
+    if (!policy.wording_id) {
       return NextResponse.json(
         { error: "Policy has no matched wording" },
         { status: 400 }
       );
     }
 
-    const { data: wording } = await supabase
+    const { data: wording, error: wordingErr } = await supabase
       .from("policy_wording")
       .select("wording_text")
       .eq("id", policy.wording_id)
       .single();
 
-    if (!wording?.wording_text) {
+    if (wordingErr || !wording?.wording_text) {
       return NextResponse.json(
         { error: "Wording text missing" },
         { status: 400 }
@@ -58,61 +60,90 @@ export async function POST(req: NextRequest) {
     const scheduleJSON = policy.ocr_text;
     const wordingText = wording.wording_text;
 
-    // 2) Comparison prompt
+    const scheduleLen = JSON.stringify(scheduleJSON).length;
+    const wordingLen = wordingText.length;
+
+    console.log("COMPARE: lengths →", {
+      scheduleLen,
+      wordingLen,
+      hasWording: wordingLen > 0,
+    });
+
+    // ------------------------------
+    // 2) Build ONE large string prompt
+    // ------------------------------
+    const MAX = 20000; // keeps model reliable, avoids huge context crashes
+
     const prompt = `
-Compare this INSURANCE POLICY SCHEDULE (structured JSON) with this POLICY WORDING (raw text)
-and return a STRICT JSON summary:
+You are a senior insurance analyst. Compare an INSURANCE POLICY SCHEDULE (structured JSON)
+with the POLICY WORDING (full legal text).
+
+You MUST return STRICT JSON in this exact schema:
 
 {
   "sections": [
     {
-      "name": "Section name",
-      "schedule_limit": "...",
-      "wording_limit": "...",
+      "name": "string",
+      "schedule_limit": "string or null",
+      "wording_limit": "string or null",
       "match": true/false,
-      "notes": "short explanation"
+      "notes": "short plain-English explanation"
     }
   ],
-  "missing_sections": ["..."],
+  "missing_sections": ["string"],
   "endorsement_differences": [
     {
-      "endorsement": "...",
+      "endorsement": "string",
       "in_schedule": true/false,
       "in_wording": true/false
     }
   ],
-  "overall_risk_summary": "1–2 sentence conclusion with no nonsense."
+  "overall_risk_summary": "1–2 sentences."
 }
 
 RULES:
-- Be precise.
-- Use the schedule JSON's tables to read limits.
-- If the wording does not specify a limit for a section, set wording_limit=null.
-- Do NOT assume limits.
-`;
+- Use the schedule JSON to extract LIMITS, DEDUCTIBLES, SUBLIMITS.
+- Use the wording text to determine what is actually covered or excluded.
+- NEVER invent limits. If wording has no limit, set "wording_limit": null.
+- NEVER output explanations outside the JSON.
+- NEVER modify or simplify numbers. Copy schedule values exactly.
+- Be strict, precise, and concise.
 
-    const completion = await openai.responses.create({
-      model: "gpt-5",
-      input: [
-        { role: "user", content: [
-            { type: "input_text", text: prompt },
-            { type: "input_text", text: `SCHEDULE_JSON:\n${scheduleJSON}` },
-            { type: "input_text", text: `WORDING_TEXT:\n${wordingText}` },
-        ]}
-      ]
+---------------- SCHEDULE_JSON ----------------
+${JSON.stringify(scheduleJSON).slice(0, MAX)}
+
+---------------- WORDING_TEXT ----------------
+${wordingText.slice(0, MAX)}
+
+NOW RETURN ONLY THE JSON.`;
+
+    // ------------------------------
+    // 3) Call OpenAI using correct v6 syntax
+    // ------------------------------
+    const ai = await openai.responses.create({
+      model: "gpt-5", // correct for comparison task
+      input: prompt,
+      max_output_tokens: 2000,
     });
 
-    let output = completion.output_text ?? "{}";
+    let raw = ai.output_text ?? "{}";
 
-    // Clean up markdown if needed
-    output = output
-      .replace(/```json/gi, "")
-      .replace(/```/g, "")
-      .trim();
+    raw = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
 
-    const analysis = JSON.parse(output);
+    let analysis;
+    try {
+      analysis = JSON.parse(raw);
+    } catch (err) {
+      console.error("COMPARE: JSON parse error:", raw);
+      return NextResponse.json(
+        { error: "AI returned invalid JSON", raw },
+        { status: 500 }
+      );
+    }
 
-    // 3) Save comparison result
+    // ------------------------------
+    // 4) Save comparison to DB
+    // ------------------------------
     await supabase.from("analysis").insert({
       policy_id: policyId,
       result_json: analysis,
@@ -121,6 +152,7 @@ RULES:
     return NextResponse.json({ success: true, analysis });
 
   } catch (err: any) {
+    console.error("COMPARE ERROR:", err);
     return NextResponse.json(
       { error: "Compare error", details: err.message },
       { status: 500 }
