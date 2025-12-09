@@ -16,20 +16,25 @@ const supabase = createClient(
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, policies = [], lastPolicyId, clarification } =
-      await req.json();
+    const {
+      message,
+      policies = [],
+      lastPolicyId,
+      clarification,
+    } = await req.json();
 
     let selectedPolicyId: string | null = lastPolicyId || null;
 
     // -------------------------------------------------
-    // AUTO-SELECT IF ONLY ONE POLICY
+    // 1. AUTO-SELECT IF ONLY ONE POLICY
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification && policies.length === 1) {
       selectedPolicyId = policies[0].id;
+      console.log("CHAT: auto-selected single policy:", selectedPolicyId);
     }
 
     // -------------------------------------------------
-    // GPT POLICY PICKER (only if multiple policies)
+    // 2. GPT POLICY PICKER (only if multiple policies)
     // -------------------------------------------------
     if (!selectedPolicyId && !clarification && policies.length > 1) {
       const choosePrompt = `
@@ -47,7 +52,7 @@ Version="${p.wording_version}"`;
   })
   .join("\n\n")}
 
-Return ONLY JSON:
+Return ONLY JSON.
 
 If clear:
 { "policyId": "<UUID>", "needs_clarification": false }
@@ -59,18 +64,18 @@ If unclear:
 
       const chooseResp = await openai.responses.create({
         model: "gpt-5-mini",
-        input: choosePrompt,
+        input: choosePrompt, // simple string input
         max_output_tokens: 150,
       });
 
       let raw = chooseResp.output_text || "{}";
       raw = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
 
-      let parsed;
-
+      let parsed: any;
       try {
         parsed = JSON.parse(raw);
-      } catch {
+      } catch (e) {
+        console.error("CHAT: failed to parse policy picker JSON:", raw);
         return NextResponse.json({
           clarification: true,
           question: "Which policy are you asking about?",
@@ -85,6 +90,7 @@ If unclear:
       }
 
       selectedPolicyId = parsed.policyId;
+      console.log("CHAT: GPT-selected policy:", selectedPolicyId);
     }
 
     if (!selectedPolicyId) {
@@ -95,15 +101,16 @@ If unclear:
     }
 
     // -------------------------------------------------
-    // LOAD POLICY AND WORDING FROM SUPABASE
+    // 3. LOAD POLICY + WORDING FROM SUPABASE
     // -------------------------------------------------
-    const { data: policy } = await supabase
+    const { data: policy, error: policyErr } = await supabase
       .from("policies")
-      .select("ocr_text, wording_id")
+      .select("ocr_text, wording_id, file_name, insurer, wording_version")
       .eq("id", selectedPolicyId)
       .single();
 
-    if (!policy) {
+    if (policyErr || !policy) {
+      console.error("CHAT: policy not found or error:", policyErr);
       return NextResponse.json(
         { error: "Policy not found" },
         { status: 404 }
@@ -111,7 +118,6 @@ If unclear:
     }
 
     let scheduleJSON: any;
-
     try {
       scheduleJSON = JSON.parse(policy.ocr_text);
     } catch {
@@ -122,15 +128,19 @@ If unclear:
     let comparisonJSON: any = null;
 
     if (policy.wording_id) {
-      const { data: wording } = await supabase
+      const { data: wording, error: wordingErr } = await supabase
         .from("policy_wording")
         .select("wording_text")
         .eq("id", policy.wording_id)
         .single();
 
+      if (wordingErr) {
+        console.error("CHAT: wording load error:", wordingErr);
+      }
+
       wordingText = wording?.wording_text || "";
 
-      const { data: comp } = await supabase
+      const { data: comp, error: compErr } = await supabase
         .from("analysis")
         .select("result_json")
         .eq("policy_id", selectedPolicyId)
@@ -138,11 +148,31 @@ If unclear:
         .limit(1)
         .single();
 
+      if (compErr) {
+        console.error("CHAT: comparison load error:", compErr);
+      }
+
       comparisonJSON = comp?.result_json || null;
+    } else {
+      console.warn(
+        "CHAT: policy has no wording_id, only schedule will be used.",
+        selectedPolicyId
+      );
     }
 
+    // Log lengths so you can see if wording is actually there
+    const scheduleLen = JSON.stringify(scheduleJSON).length;
+    const wordingLen = wordingText.length;
+    const comparisonLen = JSON.stringify(comparisonJSON || {}).length;
+    console.log("CHAT: lengths", {
+      scheduleLen,
+      wordingLen,
+      comparisonLen,
+      hasWording: wordingLen > 0,
+    });
+
     // -------------------------------------------------
-    // GPT ANSWER PROMPT (broker-style, concise)
+    // 4. BUILD PROMPT (STRING INPUT)
     // -------------------------------------------------
     const MAX = 20000;
 
@@ -157,7 +187,7 @@ DATA YOU HAVE
 YOUR JOB
 - Answer as a human insurance broker would.
 - If the question is about coverage (e.g. "Am I covered for crime?"):
-  - Start with a clear yes/no/short statement.
+  - Start with a clear coverage statement ("Yes, but…", "Partially", "No…").
   - Then give 2–5 short bullet points with:
     - key clause numbers (e.g. "Clause 2.2(b) Crime"),
     - limits and deductibles,
@@ -183,13 +213,19 @@ HOW TO USE THE DATA
 - Only say information is missing if you truly cannot find ANY reference
   to the clause number or topic in EITHER the schedule JSON OR the wording text.
 
-IMPORTANT BEHAVIOUR
-- Do NOT say "I could not generate an answer."
-- If data is incomplete, say something like:
-  "I can see that <topic> is listed in the schedule, but the detailed wording
-  is not visible here. Based on the schedule, here is what we can say: ..."
-- Do not hallucinate new cover that is not implied by the documents.
+NUMBERS / LIMITS
+- When giving limits or deductibles, COPY the value exactly as shown in the schedule.
+- Do NOT simplify or shorten numbers ("$5,000" must NOT become "$5" or "$5k").
+- If uncertain, quote the value verbatim from the schedule.
+
+IF WORDING IS MISSING
+- If wording text is empty, rely only on the schedule.
+- In that case, say: "I only have the schedule, not the full wording text; based on the schedule: ..."
+- Still answer with what you can see.
+
+STYLE
 - Keep answers concise, broker-friendly, and focused on what the user asked.
+- Prefer bullet points for coverage questions.
 
 ---
 
@@ -199,12 +235,16 @@ ${JSON.stringify(scheduleJSON).slice(0, MAX)}
 ---
 
 POLICY_WORDING_TEXT:
-${wordingText.slice(0, MAX)}
+${
+  wordingText
+    ? wordingText.slice(0, MAX)
+    : "[NO WORDING TEXT AVAILABLE IN DATABASE]"
+}
 
 ---
 
 COMPARISON_JSON:
-${JSON.stringify(comparisonJSON).slice(0, MAX)}
+${JSON.stringify(comparisonJSON || {}).slice(0, MAX)}
 
 ---
 
@@ -214,20 +254,27 @@ USER QUESTION:
 Now provide the best possible broker-style answer based ONLY on the information above.
 `;
 
+    // -------------------------------------------------
+    // 5. CALL OPENAI
+    // -------------------------------------------------
     const resp = await openai.responses.create({
       model: "gpt-5-mini",
       input: finalPrompt,
-      max_output_tokens: 2000,
+      max_output_tokens: 800,
     });
 
-   return NextResponse.json({
-  test: true,
-  schedule_length: JSON.stringify(scheduleJSON).length,
-  wording_length: wordingText.length,
-  first_500_wording_chars: wordingText.slice(0, 500),
-  has_writing: wordingText.length > 0,
-});
+    const answer =
+      resp.output_text ||
+      "I couldn't find enough detail in the schedule or wording text provided to answer that confidently.";
 
+    // -------------------------------------------------
+    // 6. RETURN ANSWER TO FRONTEND
+    // -------------------------------------------------
+    return NextResponse.json({
+      success: true,
+      answer,
+      selectedPolicyId,
+    });
   } catch (err: any) {
     console.error("CHAT ERROR:", err);
     return NextResponse.json(
