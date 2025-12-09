@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     // 1) Load policy + wording
     const { data: policy } = await supabase
       .from("policies")
-      .select("ocr_text, wording_id")
+      .select("ocr_text, wording_id, file_name, insurer, wording_version")
       .eq("id", policyId)
       .single();
 
