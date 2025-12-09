@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
@@ -17,6 +17,9 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
     const customerId = formData.get("customerId") as string | null;
+
+    // ⭐ NEW: wording selection from UI
+    const wordingId = formData.get("wordingId") as string | null;
 
     if (!file)
       return NextResponse.json({ error: "Missing file" }, { status: 400 });
@@ -63,33 +66,16 @@ STRICT RULES:
 - NO markdown.
 - NO code fences.
 - NO explanations.
-- NO extra text.
 - JSON must start with '{' and end with '}'.
 
 Extract with this schema:
 
 {
-  "tables": {
-    "Table Name": [
-      ["Header1", "Header2"],
-      ["Row1Col1", "Row1Col2"]
-    ]
-  },
+  "tables": {...},
   "text": "Full extracted readable text or summarised text.",
-  "metadata": {
-    "insurer": "...",
-    "policy_number": "...",
-    "policy_type": "...",
-    "wording_version": "...",
-    "effective_date": "...",
-    "expiry_date": "...",
-    "currency": "...",
-    "coverage_limit": "..."
-  }
+  "metadata": {...}
 }
-
-If any field is missing, set it to null.
-Never guess values.
+If fields are missing, set them to null.
 `;
 
     let extractionJson: any | null = null;
@@ -110,21 +96,14 @@ Never guess values.
         ],
       });
 
-      // Always use output_text in new SDK
       let output = result.output_text ?? "";
-
-      // Clean unwanted code fences
-      output = output
-        .replace(/```json/gi, "")
-        .replace(/```/g, "")
-        .trim();
+      output = output.replace(/```json/gi, "").replace(/```/g, "").trim();
 
       extractionJson = JSON.parse(output);
       ocrTextToStore = JSON.stringify(extractionJson, null, 2);
     } catch (err) {
       console.error("Primary JSON extraction failed, fallback OCR:", err);
 
-      // 5) Fallback plain-text OCR
       const fb = await openai.responses.create({
         model: "gpt-5-mini",
         input: [
@@ -142,7 +121,7 @@ Never guess values.
       extractionJson = null;
     }
 
-    // 6) Metadata extraction if available
+    // 6) Metadata extraction
     const insurer =
       extractionJson?.metadata?.insurer ??
       extractionJson?.metadata?.issued_by ??
@@ -153,7 +132,7 @@ Never guess values.
       extractionJson?.metadata?.wording_reference ??
       null;
 
-    // 7) Insert policy into database
+    // 7) Insert policy into database ⭐ NOW INCLUDING wordingId
     const { data: policy, error: policyError } = await supabase
       .from("policies")
       .insert({
@@ -161,8 +140,9 @@ Never guess values.
         file_name: file.name,
         file_url: fileUrl,
         ocr_text: ocrTextToStore,
-        insurer: insurer,
+        insurer,
         wording_version: wordingVersion,
+        wording_id: wordingId || null, // ⭐ NEW LINE
         status: "uploaded",
       })
       .select()
@@ -173,29 +153,6 @@ Never guess values.
         { error: "Failed to insert policy", details: policyError },
         { status: 500 }
       );
-    }
-
-    // 8) Auto-run extract-policy & match-policy
-    const origin = new URL(req.url).origin;
-
-    try {
-      await fetch(`${origin}/api/extract-policy`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ policyId: policy.id }),
-      });
-    } catch (err) {
-      console.error("extract-policy failed:", err);
-    }
-
-    try {
-      await fetch(`${origin}/api/match-policy`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ policyId: policy.id }),
-      });
-    } catch (err) {
-      console.error("match-policy failed:", err);
     }
 
     return NextResponse.json(
