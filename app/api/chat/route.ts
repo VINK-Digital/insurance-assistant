@@ -220,15 +220,14 @@ Now provide the best possible broker-style answer based ONLY on the information 
       max_output_tokens: 2000,
     });
 
-    const answer =
-      resp.output_text ||
-      "I couldn't find enough detail in the schedule or wording text provided to answer that confidently.";
+   return NextResponse.json({
+  test: true,
+  schedule_length: JSON.stringify(scheduleJSON).length,
+  wording_length: wordingText.length,
+  first_500_wording_chars: wordingText.slice(0, 500),
+  has_writing: wordingText.length > 0,
+});
 
-    return NextResponse.json({
-      success: true,
-      answer,
-      selectedPolicyId,
-    });
   } catch (err: any) {
     console.error("CHAT ERROR:", err);
     return NextResponse.json(
