@@ -7,12 +7,22 @@ type Customer = {
   name: string;
 };
 
+type Wording = {
+  id: string;
+  insurer: string | null;
+  wording_version: string | null;
+};
+
 export default function UploadPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
 
-  // Status: idle | uploading | ocr | parsing | matching | done | error
+  // ⭐ NEW: selected wording
+  const [wordings, setWordings] = useState<Wording[]>([]);
+  const [selectedWordingId, setSelectedWordingId] = useState<string | null>(null);
+
+  // Status
   const [status, setStatus] = useState<string>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -25,6 +35,13 @@ export default function UploadPage() {
     fetch("/api/customers")
       .then((r) => r.json())
       .then((data) => setCustomers(data.customers || []));
+  }, []);
+
+  // ⭐ NEW: Load wordings
+  useEffect(() => {
+    fetch("/api/wordings")
+      .then((r) => r.json())
+      .then((data) => setWordings(data.wordings || []));
   }, []);
 
   // Auto-select ?customerId
@@ -44,6 +61,11 @@ export default function UploadPage() {
     formData.append("file", file);
     formData.append("customerId", customerId);
 
+    // ⭐ NEW: send wordingId
+    if (selectedWordingId) {
+      formData.append("wordingId", selectedWordingId);
+    }
+
     try {
       const res = await fetch("/api/upload", {
         method: "POST",
@@ -62,7 +84,6 @@ export default function UploadPage() {
       const data = await res.json();
       console.log("UPLOAD RESULT:", data);
 
-      // If extraction JSON exists, update the UI flow
       if (data.extracted) {
         setStatus("matching");
       }
@@ -93,33 +114,37 @@ export default function UploadPage() {
     }
   }
 
-  // Status component
+  // STATUS COMPONENT
   const renderStatus = () => {
     const common = "mt-4 p-3 rounded text-white font-medium";
 
     switch (status) {
       case "uploading":
         return <div className={`${common} bg-blue-600`}>Uploading file…</div>;
-
-      case "ocr":
-        return <div className={`${common} bg-indigo-600`}>Scanning document (OCR)…</div>;
-
       case "parsing":
-        return <div className={`${common} bg-purple-600`}>Extracting structured data…</div>;
-
+        return (
+          <div className={`${common} bg-purple-600`}>
+            Extracting structured data…
+          </div>
+        );
       case "matching":
-        return <div className={`${common} bg-teal-600`}>Matching policy wording…</div>;
-
+        return (
+          <div className={`${common} bg-teal-600`}>
+            Matching policy wording…
+          </div>
+        );
       case "done":
-        return <div className={`${common} bg-green-600`}>Upload complete ✓</div>;
-
+        return (
+          <div className={`${common} bg-green-600`}>
+            Upload complete ✓
+          </div>
+        );
       case "error":
         return (
           <div className={`${common} bg-red-600`}>
             Error: {errorMsg || "Something went wrong"}
           </div>
         );
-
       default:
         return null;
     }
@@ -127,7 +152,6 @@ export default function UploadPage() {
 
   return (
     <div className="p-6 max-w-2xl mx-auto">
-
       <h1 className="text-2xl font-bold mb-4">Upload Policy</h1>
 
       {/* CUSTOMER SELECT */}
@@ -153,6 +177,22 @@ export default function UploadPage() {
           + Add Customer
         </button>
       </div>
+
+      {/* ⭐ NEW: WORDING SELECTOR */}
+      <label className="text-sm font-medium">Select Policy Wording</label>
+      <select
+        className="w-full border p-2 rounded mb-4 mt-2"
+        value={selectedWordingId || ""}
+        onChange={(e) => setSelectedWordingId(e.target.value)}
+      >
+        <option value="">Choose wording...</option>
+
+        {wordings.map((w) => (
+          <option key={w.id} value={w.id}>
+            {w.insurer || "Unknown"} — {w.wording_version || "No version"}
+          </option>
+        ))}
+      </select>
 
       {/* FILE INPUT */}
       <input
@@ -203,7 +243,6 @@ export default function UploadPage() {
           </div>
         </div>
       )}
-
     </div>
   );
 }
