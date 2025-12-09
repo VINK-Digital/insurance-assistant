@@ -60,7 +60,7 @@ If unclear:
       const chooseResp = await openai.responses.create({
         model: "gpt-5-mini",
         input: choosePrompt,
-        max_output_tokens: 100,
+        max_output_tokens: 150,
       });
 
       let raw = chooseResp.output_text || "{}";
@@ -110,7 +110,7 @@ If unclear:
       );
     }
 
-    let scheduleJSON;
+    let scheduleJSON: any;
 
     try {
       scheduleJSON = JSON.parse(policy.ocr_text);
@@ -119,7 +119,7 @@ If unclear:
     }
 
     let wordingText = "";
-    let comparisonJSON = null;
+    let comparisonJSON: any = null;
 
     if (policy.wording_id) {
       const { data: wording } = await supabase
@@ -142,50 +142,87 @@ If unclear:
     }
 
     // -------------------------------------------------
-    // GPT ANSWER PROMPT
+    // GPT ANSWER PROMPT (broker-style, concise)
     // -------------------------------------------------
-    
-const MAX = 20000;
+    const MAX = 20000;
 
-const finalPrompt = `
-You are VINK — an expert insurance assistant.
+    const finalPrompt = `
+You are VINK — a specialist insurance assistant for brokers.
 
-You have three data sources:
+DATA YOU HAVE
+- POLICY_SCHEDULE_JSON: limits, deductibles, sections, clause references.
+- POLICY_WORDING_TEXT: legal clauses, definitions, exclusions.
+- COMPARISON_JSON: any pre-calculated differences between schedule and wording.
 
-1. POLICY SCHEDULE JSON  
-2. POLICY WORDING TEXT (legal clauses, definitions)  
-3. COMPARISON JSON (differences)
+YOUR JOB
+- Answer as a human insurance broker would.
+- If the question is about coverage (e.g. "Am I covered for crime?"):
+  - Start with a clear yes/no/short statement.
+  - Then give 2–5 short bullet points with:
+    - key clause numbers (e.g. "Clause 2.2(b) Crime"),
+    - limits and deductibles,
+    - important conditions or extensions.
+- If the question is about a clause (e.g. "tell me about clause 2.2"):
+  - Summarise what the clause does in plain English (3–5 sentences max),
+  - Mention the clause number and title,
+  - Mention relevant limits/deductibles from the schedule.
 
-RULES:
-- Use the wording text for clauses (e.g., "Clause 2.2").
-- Use the schedule for limits, deductibles, sub-limits.
-- If something is missing from BOTH schedule & wording, say:
-  "This information is not present in the schedule or wording."
-- Be concise, use 3–5 sentences max unless clarification is needed.
+HOW TO USE THE DATA
+- Use the schedule for:
+  - limits, sub-limits, deductibles,
+  - which sections/clauses are included,
+  - automatic extensions and their sub-limits.
+- Use the wording text for:
+  - what each clause actually means,
+  - definitions, exclusions, and conditions.
+- If a clause or topic is named in the schedule (e.g. "2.2(b) Crime"),
+  you SHOULD answer questions about it using:
+  - its title in the schedule,
+  - its limit/deductible,
+  - any related extensions that mention the same clause/section.
+- Only say information is missing if you truly cannot find ANY reference
+  to the clause number or topic in EITHER the schedule JSON OR the wording text.
 
-SCHEDULE_JSON:
+IMPORTANT BEHAVIOUR
+- Do NOT say "I could not generate an answer."
+- If data is incomplete, say something like:
+  "I can see that <topic> is listed in the schedule, but the detailed wording
+  is not visible here. Based on the schedule, here is what we can say: ..."
+- Do not hallucinate new cover that is not implied by the documents.
+- Keep answers concise, broker-friendly, and focused on what the user asked.
+
+---
+
+POLICY_SCHEDULE_JSON:
 ${JSON.stringify(scheduleJSON).slice(0, MAX)}
 
-WORDING_TEXT:
+---
+
+POLICY_WORDING_TEXT:
 ${wordingText.slice(0, MAX)}
+
+---
 
 COMPARISON_JSON:
 ${JSON.stringify(comparisonJSON).slice(0, MAX)}
 
+---
+
 USER QUESTION:
 "${message}"
 
-Provide the best possible grounded answer.
+Now provide the best possible broker-style answer based ONLY on the information above.
 `;
 
     const resp = await openai.responses.create({
       model: "gpt-5-mini",
       input: finalPrompt,
-      max_output_tokens: 1000,
+      max_output_tokens: 2000,
     });
 
     const answer =
-      resp.output_text || "I'm sorry — I could not generate an answer.";
+      resp.output_text ||
+      "I couldn't find enough detail in the schedule or wording text provided to answer that confidently.";
 
     return NextResponse.json({
       success: true,
