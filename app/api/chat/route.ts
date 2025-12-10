@@ -1,4 +1,4 @@
-export const dynamic = "force-dynamic";
+xexport const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -61,7 +61,7 @@ If unclear:
       const chooseResp = await openai.responses.create({
         model: "gpt-5-mini",
         input: choosePrompt,
-        max_output_tokens: 150,
+        max_output_tokens: 8000,
       });
 
       let raw = chooseResp.output_text || "{}";
@@ -245,7 +245,7 @@ Now provide the best possible broker-style answer based ONLY on the information 
     const aiResp = await openai.responses.create({
       model: "gpt-5-mini",
       input: finalPrompt,
-      max_output_tokens: 800,
+      max_output_tokens: 8000,
     });
 
     const answer =
