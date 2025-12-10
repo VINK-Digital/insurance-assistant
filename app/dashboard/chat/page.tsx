@@ -1,12 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import OpenAI from "openai";
-
-const openai = new OpenAI({
-  apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY!,
-  dangerouslyAllowBrowser: true,
-});
 
 export default function ChatPage() {
   const [customers, setCustomers] = useState<any[]>([]);
@@ -21,19 +15,19 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto scroll to bottom when messages change
+  // Auto scroll
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Load all customers for dropdown
+  // Load customers
   useEffect(() => {
     fetch("/api/customers")
       .then((r) => r.json())
       .then((data) => setCustomers(data.customers || []));
   }, []);
 
-  // Load policies when customer is selected
+  // Load policies when customer is chosen
   useEffect(() => {
     if (!customerId) return;
 
@@ -41,115 +35,81 @@ export default function ChatPage() {
       .then((r) => r.json())
       .then((data) => {
         setPolicies(data.policies || []);
-        setMessages([]); // Reset chat for new customer
-        setLastPolicyId(null); // Unlock memory
+        setMessages([]);
+        setLastPolicyId(null);
       });
   }, [customerId]);
 
-  // Helper: pick a policy (for now: first one)
-  function getActivePolicy() {
-    if (policies.length === 0) return null;
-    if (lastPolicyId) {
-      const found = policies.find((p) => p.id === lastPolicyId);
-      if (found) return found;
-    }
-    // Fallback: first policy
-    return policies[0];
-  }
-
   // -------------------------------
-  // SEND MESSAGE (client-side OpenAI)
+  // SEND MESSAGE (calls BACKEND)
   // -------------------------------
   async function sendMessage() {
     if (!input.trim() || !customerId) return;
 
     const text = input.trim();
-    setInput(""); // Clear input immediately
-
-    const policy = getActivePolicy();
-    if (!policy) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "No policy found for this customer." },
-      ]);
-      return;
-    }
+    setInput("");
 
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setLoading(true);
 
     try {
-      const MAX = 20000;
-
-      const prompt = `
-You are VINK — an insurance assistant for brokers.
-
-You have a single policy schedule in JSON and the user's question.
-
-Use ONLY the schedule JSON to answer. If something is not present,
-say exactly: "This information is not present in the schedule."
-
-POLICY_SCHEDULE_JSON:
-${JSON.stringify(policy).slice(0, MAX)}
-
-USER QUESTION:
-${text}
-`;
-
-      const resp = await openai.responses.create({
-        model: "gpt-5-mini",
-        input: prompt,
-        max_output_tokens: 400,
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          policies,
+          lastPolicyId,
+          clarification: false,
+        }),
       });
 
-      const answer =
-        resp.output_text || "I'm sorry — I could not generate an answer.";
+      const data = await res.json();
 
-      // Remember which policy we used
-      setLastPolicyId(policy.id);
+      if (data.selectedPolicyId) {
+        setLastPolicyId(data.selectedPolicyId);
+      }
+
+      if (data.clarification) {
+        setClarification(data.question);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: data.question },
+        ]);
+        return;
+      }
 
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: answer },
+        { role: "assistant", content: data.answer },
       ]);
     } catch (err: any) {
-      console.error("CLIENT OPENAI ERROR:", err);
+      console.error("CHAT FRONTEND ERROR:", err);
       setMessages((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          content:
-            "Sorry, there was an error talking to OpenAI on the client side.",
-        },
+        { role: "assistant", content: "Server error. Try again." },
       ]);
     } finally {
       setLoading(false);
     }
   }
 
-  // NOTE: clarification flow is not using GPT policy selection anymore.
-  // You could wire that back up later if you want, but for now we keep it simple.
-
-  // --------------------------------
-  // UI
-  // --------------------------------
+  // -------------------------------
+  // FRONTEND
+  // -------------------------------
   return (
     <div className="w-full min-h-screen bg-gray-100 flex justify-center p-6">
       <div className="w-full max-w-3xl bg-white shadow-lg rounded-xl flex flex-col border border-gray-200">
-        {/* HEADER */}
-        <div className="p-4 border-b border-gray-200 bg-white rounded-t-xl">
-          <h1 className="text-2xl font-semibold text-gray-800">
-            Policy Assistant
-          </h1>
+        {/* Header */}
+        <div className="p-4 border-b border-gray-200">
+          <h1 className="text-2xl font-semibold">Policy Assistant</h1>
           <p className="text-gray-500 text-sm">
             Ask anything about your customer’s policies.
           </p>
 
-          {/* CUSTOMER DROPDOWN */}
+          {/* Customer Dropdown */}
           <div className="mt-4">
-            <label className="text-sm font-medium text-gray-700">
-              Select customer
-            </label>
+            <label className="text-sm font-medium">Select customer</label>
             <select
               className="mt-2 w-full border rounded-lg px-3 py-2 bg-gray-50"
               value={customerId || ""}
@@ -165,14 +125,13 @@ ${text}
           </div>
         </div>
 
-        {/* CHAT DISABLED UNTIL CUSTOMER SELECTED */}
+        {/* Chat */}
         {!customerId ? (
           <div className="p-6 text-center text-gray-500">
             Select a customer to start chatting.
           </div>
         ) : (
           <>
-            {/* CHAT MESSAGES */}
             <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50">
               {messages.map((msg, i) => (
                 <div
@@ -184,28 +143,27 @@ ${text}
                   <div
                     className={`max-w-[75%] px-4 py-3 rounded-2xl shadow-sm text-sm leading-relaxed ${
                       msg.role === "user"
-                        ? "bg-green-600 text-white rounded-br-none"
-                        : "bg-white text-gray-800 border rounded-bl-none"
+                        ? "bg-green-600 text-white"
+                        : "bg-white text-gray-800 border"
                     }`}
                   >
                     {msg.content}
                   </div>
                 </div>
               ))}
-
               <div ref={scrollRef} />
             </div>
 
-            {/* INPUT BOX */}
-            <div className="p-4 border-t border-gray-200 bg-white rounded-b-xl">
+            {/* Input */}
+            <div className="p-4 border-t border-gray-200">
               <div className="flex gap-3">
                 <input
-                  className="flex-1 border border-gray-300 bg-gray-50 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-green-600"
-                  placeholder={"Ask about a policy…"}
+                  className="flex-1 border rounded-lg px-4 py-3 bg-gray-50"
+                  placeholder="Ask about a policy…"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !loading) {
+                    if (e.key === "Enter" && !loading) {
                       e.preventDefault();
                       sendMessage();
                     }
@@ -215,7 +173,7 @@ ${text}
                 <button
                   onClick={sendMessage}
                   disabled={loading}
-                  className="px-6 bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-lg font-medium shadow-sm transition"
+                  className="px-6 bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded-lg"
                 >
                   {loading ? "Thinking…" : "Send"}
                 </button>
