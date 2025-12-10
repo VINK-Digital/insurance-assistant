@@ -25,17 +25,13 @@ export async function POST(req: NextRequest) {
 
     let selectedPolicyId: string | null = lastPolicyId || null;
 
-    // -------------------------------------------------
-    // 1. AUTO-SELECT IF ONLY ONE POLICY
-    // -------------------------------------------------
+    // 1. Auto-select if only one policy
     if (!selectedPolicyId && !clarification && policies.length === 1) {
       selectedPolicyId = policies[0].id;
       console.log("CHAT: auto-selected single policy:", selectedPolicyId);
     }
 
-    // -------------------------------------------------
-    // 2. GPT POLICY PICKER (only if multiple policies)
-    // -------------------------------------------------
+    // 2. GPT policy picker (multiple policies)
     if (!selectedPolicyId && !clarification && policies.length > 1) {
       const choosePrompt = `
 A customer asked: "${message}"
@@ -64,7 +60,7 @@ If unclear:
 
       const chooseResp = await openai.responses.create({
         model: "gpt-5-mini",
-        input: choosePrompt, // simple string input
+        input: choosePrompt,
         max_output_tokens: 150,
       });
 
@@ -100,9 +96,7 @@ If unclear:
       );
     }
 
-    // -------------------------------------------------
-    // 3. LOAD POLICY + WORDING FROM SUPABASE
-    // -------------------------------------------------
+    // 3. Load policy + wording from Supabase
     const { data: policy, error: policyErr } = await supabase
       .from("policies")
       .select("ocr_text, wording_id, file_name, insurer, wording_version")
@@ -160,10 +154,10 @@ If unclear:
       );
     }
 
-    // Log lengths so you can see if wording is actually there
     const scheduleLen = JSON.stringify(scheduleJSON).length;
     const wordingLen = wordingText.length;
     const comparisonLen = JSON.stringify(comparisonJSON || {}).length;
+
     console.log("CHAT: lengths", {
       scheduleLen,
       wordingLen,
@@ -171,9 +165,7 @@ If unclear:
       hasWording: wordingLen > 0,
     });
 
-    // -------------------------------------------------
-    // 4. BUILD PROMPT (STRING INPUT)
-    // -------------------------------------------------
+    // 4. Build prompt
     const MAX = 20000;
 
     const finalPrompt = `
@@ -205,17 +197,12 @@ HOW TO USE THE DATA
 - Use the wording text for:
   - what each clause actually means,
   - definitions, exclusions, and conditions.
-- If a clause or topic is named in the schedule (e.g. "2.2(b) Crime"),
-  you SHOULD answer questions about it using:
-  - its title in the schedule,
-  - its limit/deductible,
-  - any related extensions that mention the same clause/section.
 - Only say information is missing if you truly cannot find ANY reference
   to the clause number or topic in EITHER the schedule JSON OR the wording text.
 
 NUMBERS / LIMITS
 - When giving limits or deductibles, COPY the value exactly as shown in the schedule.
-- Do NOT simplify or shorten numbers ("$5,000" must NOT become "$5" or "$5k").
+- Do NOT simplify numbers ("$5,000" must NOT become "$5" or "$5k").
 - If uncertain, quote the value verbatim from the schedule.
 
 IF WORDING IS MISSING
@@ -254,26 +241,29 @@ USER QUESTION:
 Now provide the best possible broker-style answer based ONLY on the information above.
 `;
 
-    // -------------------------------------------------
-    // 5. CALL OPENAI
-    // -------------------------------------------------
-    const resp = await openai.responses.create({
+    // 5. Call OpenAI
+    const aiResp = await openai.responses.create({
       model: "gpt-5-mini",
       input: finalPrompt,
       max_output_tokens: 800,
     });
 
     const answer =
-      resp.output_text ||
+      aiResp.output_text ||
       "I couldn't find enough detail in the schedule or wording text provided to answer that confidently.";
 
-    // -------------------------------------------------
-    // 6. RETURN ANSWER TO FRONTEND
-    // -------------------------------------------------
+    // 6. Return answer + debug info
     return NextResponse.json({
       success: true,
       answer,
       selectedPolicyId,
+      debug: {
+        schedule_length: scheduleLen,
+        wording_length: wordingLen,
+        comparison_length: comparisonLen,
+        first_400_wording_chars: wordingText.slice(0, 400),
+        has_writing: wordingLen > 0,
+      },
     });
   } catch (err: any) {
     console.error("CHAT ERROR:", err);
