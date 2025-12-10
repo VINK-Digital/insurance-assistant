@@ -185,7 +185,6 @@ Now produce the best broker-quality answer.
       model: "gpt-5-mini",
       input: finalPrompt,
       max_output_tokens: 5000,
-      temperature: 0.2,
     });
 
     const answer =
