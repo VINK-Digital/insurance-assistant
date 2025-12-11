@@ -16,21 +16,38 @@ const supabase = createClient(
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, policies = [], lastPolicyId, clarification } =
-      await req.json();
+    // --------------------------------------
+    // 0. Parse request body ONCE
+    // --------------------------------------
+    const body = await req.json();
+
+    const {
+      message,
+      policies = [],
+      customerId,
+      lastPolicyId,
+      clarification,
+    } = body;
+
+    if (!customerId) {
+      return NextResponse.json(
+        { error: "No customer selected" },
+        { status: 400 }
+      );
+    }
 
     let selectedPolicyId: string | null = lastPolicyId || null;
 
-    //--------------------------------------
+    // --------------------------------------
     // 1. Auto-select if only a single policy
-    //--------------------------------------
+    // --------------------------------------
     if (!selectedPolicyId && !clarification && policies.length === 1) {
       selectedPolicyId = policies[0].id;
     }
 
-    //--------------------------------------
+    // --------------------------------------
     // 2. GPT policy selection for multiples
-    //--------------------------------------
+    // --------------------------------------
     if (!selectedPolicyId && !clarification && policies.length > 1) {
       const choosePrompt = `
 A customer asked: "${message}"
@@ -88,23 +105,10 @@ If unclear:
 
       selectedPolicyId = parsed.policyId;
     }
-   const {
-  message: userMessage,
-  policies: incomingPolicies,
-  customerId,
-  lastPolicyId,
-} = await req.json();
 
-if (!customerId) {
-  return NextResponse.json(
-    { error: "No customer selected" },
-    { status: 400 }
-  );
-}
-
-    //--------------------------------------
-    // 3. Load policy + wording
-    //--------------------------------------
+    // --------------------------------------
+    // 3. Load policy & wording from Supabase
+    // --------------------------------------
     const { data: policy } = await supabase
       .from("policies")
       .select("ocr_text, wording_id")
@@ -148,9 +152,9 @@ if (!customerId) {
       comparisonJSON = comp?.result_json || null;
     }
 
-    //--------------------------------------
-    // 4. Create final system prompt
-    //--------------------------------------
+    // --------------------------------------
+    // 4. Build Final Prompt
+    // --------------------------------------
     const MAX = 20000;
 
     const finalPrompt = `
@@ -191,9 +195,9 @@ ${JSON.stringify(comparisonJSON || {}).slice(0, MAX)}
 Now produce the best broker-quality answer.
 `;
 
-    //--------------------------------------
-    // 5. Ask OpenAI
-    //--------------------------------------
+    // --------------------------------------
+    // 5. Call OpenAI
+    // --------------------------------------
     const aiResp = await openai.responses.create({
       model: "gpt-5-mini",
       input: finalPrompt,
@@ -204,9 +208,9 @@ Now produce the best broker-quality answer.
       aiResp.output_text ||
       "I could not produce an answer from the available schedule or wording text.";
 
-    //--------------------------------------
-    // 6. Return to frontend
-    //--------------------------------------
+    // --------------------------------------
+    // 6. Respond to frontend
+    // --------------------------------------
     return NextResponse.json({
       success: true,
       answer,
