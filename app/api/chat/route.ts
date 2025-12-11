@@ -88,6 +88,11 @@ If unclear:
 
       selectedPolicyId = parsed.policyId;
     }
+    const { message, policies, customerId, lastPolicyId } = await req.json();
+
+if (!customerId) {
+  return NextResponse.json({ error: "No customer selected" }, { status: 400 });
+}
 
     //--------------------------------------
     // 3. Load policy + wording

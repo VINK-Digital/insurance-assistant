@@ -59,6 +59,7 @@ export default function ChatPage() {
         body: JSON.stringify({
           message: text,
           policies,
+          customerId,
           lastPolicyId,
           clarification: false,
         }),
